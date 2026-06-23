@@ -19,12 +19,13 @@ import {
 } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { DIDClient } from '@stellar-identity/sdk';
-import { VerificationMethod, Service, DIDDocument } from '@stellar-identity/sdk';
+import { VerificationMethod, Service, DIDDocument, StellarIdentityConfig } from '@stellar-identity/sdk';
 import { Keypair } from 'stellar-sdk';
 import { Copy, Plus, Trash2, Edit, CheckCircle, AlertCircle } from 'lucide-react';
+import { useStellarIdentity } from '../hooks/useStellarIdentity';
 
 interface DIDManagerProps {
-  sdk: any; // StellarIdentitySDK instance
+  sdk: any;
   address: string;
   keypair: Keypair;
 }
@@ -530,4 +531,57 @@ const DIDDocumentDisplay: React.FC<DIDDocumentDisplayProps> = ({ didDocument, on
       )}
     </div>
   );
+};
+
+interface ConnectedDIDManagerProps {
+  config: StellarIdentityConfig;
+  autoConnect?: boolean;
+}
+
+export const ConnectedDIDManager: React.FC<ConnectedDIDManagerProps> = ({
+  config,
+  autoConnect = false,
+}) => {
+  const { sdk, address, keypair, isLoading, error } = useStellarIdentity({
+    config,
+    autoConnect,
+  });
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardContent className="p-6">
+          <div className="flex items-center justify-center">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+            <span className="ml-2">Connecting to Stellar network...</span>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (error) {
+    return (
+      <Alert variant="destructive">
+        <AlertCircle className="h-4 w-4" />
+        <AlertDescription>{error}</AlertDescription>
+      </Alert>
+    );
+  }
+
+  if (!sdk || !address || !keypair) {
+    return (
+      <Card>
+        <CardContent className="p-6">
+          <div className="text-center py-8 text-gray-500">
+            <AlertCircle className="h-12 w-12 mx-auto mb-4 text-gray-400" />
+            <p>Not connected to Stellar network</p>
+            <p className="text-sm">Use the connect function to establish a connection</p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return <DIDManager sdk={sdk} address={address} keypair={keypair} />;
 };

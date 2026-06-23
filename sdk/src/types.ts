@@ -302,11 +302,6 @@ export interface TransactionOptions {
   memo?: string;
 }
 
-export interface StellarIdentityError extends Error {
-  code: number;
-  type: string;
-}
-
 export type DIDMethod = 'stellar';
 
 export interface DIDResolutionResult {

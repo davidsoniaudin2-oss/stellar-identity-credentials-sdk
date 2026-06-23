@@ -16,8 +16,8 @@ import {
   StellarIdentityConfig,
   CreateDIDOptions,
   TransactionOptions,
-  StellarIdentityError,
 } from './types';
+import { StellarIdentityError, ErrorCode } from './errors';
 
 export interface DIDResolutionMetadata {
   contentType?: string;
@@ -202,7 +202,7 @@ export class DIDResolver {
     const result = await this.rpc.sendTransaction(prepared);
 
     if (result.status === 'ERROR') {
-      throw this.makeError(`create_did failed: ${result.errorResult}`, 500, 'TransactionError');
+      throw this.makeError(`create_did failed: ${result.errorResult}`, ErrorCode.NetworkTransactionFailed);
     }
 
     this.cache.delete(did);
@@ -223,7 +223,7 @@ export class DIDResolver {
 
     const doc = resolution.didDocument as DIDDocument;
     if (doc.verificationMethod.length <= methodIndex) {
-      throw this.makeError(`Method index ${methodIndex} out of range`, 400, 'InvalidArgument');
+      throw this.makeError(`Method index ${methodIndex} out of range`, ErrorCode.DIDInvalidFormat);
     }
 
     const updatedMethods = doc.verificationMethod.map((vm, i) =>
@@ -243,7 +243,7 @@ export class DIDResolver {
   ): Promise<void> {
     const resolution = await this.resolve(did);
     if (resolution.didResolutionMetadata.error) {
-      throw this.makeError(`DID not found: ${did}`, 404, 'NotFound');
+      throw this.makeError(`DID not found: ${did}`, ErrorCode.DIDNotFound);
     }
 
     const doc = resolution.didDocument as DIDDocument;
@@ -326,7 +326,7 @@ export class DIDResolver {
     const result = await this.rpc.sendTransaction(prepared);
 
     if (result.status === 'ERROR') {
-      throw this.makeError(`update_did failed: ${result.errorResult}`, 500, 'TransactionError');
+      throw this.makeError(`update_did failed: ${result.errorResult}`, ErrorCode.NetworkTransactionFailed);
     }
   }
 
@@ -453,10 +453,7 @@ export class DIDResolver {
     }
   }
 
-  private makeError(message: string, code: number, type: string): StellarIdentityError {
-    const err = new Error(message) as StellarIdentityError;
-    err.code = code;
-    err.type = type;
-    return err;
+  private makeError(message: string, code: number): StellarIdentityError {
+    return new StellarIdentityError(code as ErrorCode, message);
   }
 }

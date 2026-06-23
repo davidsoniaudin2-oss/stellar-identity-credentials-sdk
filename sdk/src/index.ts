@@ -12,6 +12,27 @@ export { ZKProofsClient } from './zkProofs';
 export { CacheManager, DataType } from './cacheManager';
 export { EventSubscriber } from './eventSubscriber';
 
+export {
+  ErrorCode,
+  StellarIdentityError,
+  DIDError,
+  CredentialError,
+  ReputationError,
+  ZKProofError,
+  ComplianceError,
+  ConfigurationError,
+  NetworkError,
+  mapContractError,
+  mapErrorCode,
+  isDIDError,
+  isCredentialError,
+  isReputationError,
+  isZKProofError,
+  isComplianceError,
+  isConfigurationError,
+  isNetworkError,
+} from './errors';
+
 export { DIDResolver } from './didResolver';
 export type {
   W3CResolutionResult,
@@ -42,7 +63,6 @@ export type {
   ZKProofOptions,
   ComplianceCheckOptions,
   TransactionOptions,
-  StellarIdentityError,
   DIDMethod,
   DIDResolutionResult,
   CredentialVerificationResult,

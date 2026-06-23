@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { StellarIdentitySDK, StellarIdentityConfig } from '@stellar-identity/sdk';
 import { Keypair } from 'stellar-sdk';
 
@@ -7,8 +7,8 @@ interface UseStellarIdentityOptions {
   autoConnect?: boolean;
 }
 
-interface UseStellarIdentityReturn {
-  sdk: StellarIdentitySDK | null;
+interface UseStellarIdentityReturn<T extends StellarIdentitySDK = StellarIdentitySDK> {
+  sdk: T | null;
   isConnected: boolean;
   isLoading: boolean;
   error: string | null;
@@ -21,25 +21,40 @@ interface UseStellarIdentityReturn {
   sendTransaction: (destination: string, amount: number, memo?: string) => Promise<string>;
 }
 
-export const useStellarIdentity = (options: UseStellarIdentityOptions): UseStellarIdentityReturn => {
-  const [sdk, setSdk] = useState<StellarIdentitySDK | null>(null);
+export function useStellarIdentity<T extends StellarIdentitySDK = StellarIdentitySDK>(
+  options: UseStellarIdentityOptions
+): UseStellarIdentityReturn<T> {
+  const [sdk, setSdk] = useState<T | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [address, setAddress] = useState<string | null>(null);
   const [keypair, setKeypair] = useState<Keypair | null>(null);
+  const mountedRef = useRef(true);
 
-  // Initialize SDK
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   useEffect(() => {
     try {
-      const stellarSDK = new StellarIdentitySDK(options.config);
+      const stellarSDK = new StellarIdentitySDK(options.config) as unknown as T;
       setSdk(stellarSDK);
     } catch (err: any) {
       setError(err.message || 'Failed to initialize SDK');
     }
+
+    return () => {
+      setSdk(null);
+      setKeypair(null);
+      setAddress(null);
+      setIsConnected(false);
+    };
   }, [options.config]);
 
-  // Auto-connect if enabled and there's a stored key
   useEffect(() => {
     if (options.autoConnect && sdk) {
       const storedSecret = localStorage.getItem('stellar_identity_secret');
@@ -64,25 +79,26 @@ export const useStellarIdentity = (options: UseStellarIdentityOptions): UseStell
       if (secretKey) {
         kp = Keypair.fromSecret(secretKey);
       } else {
-        kp = createKeypair();
+        kp = Keypair.random();
       }
 
-      // Verify the keypair is valid
       const publicKey = kp.publicKey();
       
       setKeypair(kp);
       setAddress(publicKey);
       setIsConnected(true);
 
-      // Store secret key if provided
       if (secretKey) {
         localStorage.setItem('stellar_identity_secret', secretKey);
       }
-
     } catch (err: any) {
-      setError(err.message || 'Failed to connect wallet');
+      if (mountedRef.current) {
+        setError(err.message || 'Failed to connect wallet');
+      }
     } finally {
-      setIsLoading(false);
+      if (mountedRef.current) {
+        setIsLoading(false);
+      }
     }
   }, [sdk]);
 
@@ -165,7 +181,7 @@ export const useStellarIdentity = (options: UseStellarIdentityOptions): UseStell
     getBalance,
     sendTransaction,
   };
-};
+}
 
 // Hook for DID operations
 export const useDID = (sdk: StellarIdentitySDK | null, address: string | null) => {

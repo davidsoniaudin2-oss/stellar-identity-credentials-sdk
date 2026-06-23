@@ -23,7 +23,8 @@ import {
   nativeToScVal,
   scValToNative,
 } from 'stellar-sdk';
-import { StellarIdentityConfig, StellarIdentityError } from './types';
+import { StellarIdentityConfig } from './types';
+import { StellarIdentityError, ComplianceError, ErrorCode } from './errors';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -685,10 +686,7 @@ export class ComplianceClient {
   }
 
   private err(msg: string): StellarIdentityError {
-    const e = new Error(msg) as StellarIdentityError;
-    e.code = 500;
-    e.type = 'ComplianceError';
-    return e;
+    return new ComplianceError(ErrorCode.ComplianceNotFound, msg);
   }
 }
 

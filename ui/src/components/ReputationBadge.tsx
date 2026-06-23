@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Card, 
   CardHeader, 
@@ -19,29 +19,165 @@ import {
   TrendingDown, 
   Minus, 
   Star, 
-  Shield, 
+  Medal,
   Award,
   AlertCircle,
   CheckCircle,
   BarChart3,
   Target,
-  Activity
+  Activity,
+  Info,
+  Gem,
+  Shield,
 } from 'lucide-react';
 
-interface ReputationBadgeProps {
-  sdk: any; // StellarIdentitySDK instance
-  address: string;
-  keypair: Keypair;
+type BadgeSize = 'sm' | 'md' | 'lg';
+
+interface TierConfig {
+  name: string;
+  minScore: number;
+  color: string;
+  textColor: string;
+  bgColor: string;
+  borderColor: string;
+  icon: React.ReactNode;
 }
 
-export const ReputationBadge: React.FC<ReputationBadgeProps> = ({ sdk, address, keypair }) => {
+interface ReputationBadgeProps {
+  sdk: any;
+  address: string;
+  keypair: Keypair;
+  size?: BadgeSize;
+}
+
+const TIERS: TierConfig[] = [
+  {
+    name: 'Platinum',
+    minScore: 90,
+    color: 'bg-gradient-to-r from-purple-500 via-pink-500 to-amber-400',
+    textColor: 'text-purple-700',
+    bgColor: 'bg-purple-50',
+    borderColor: 'border-purple-300',
+    icon: <Gem className="h-5 w-5 text-purple-600" />,
+  },
+  {
+    name: 'Gold',
+    minScore: 75,
+    color: 'bg-amber-500',
+    textColor: 'text-amber-700',
+    bgColor: 'bg-amber-50',
+    borderColor: 'border-amber-300',
+    icon: <Award className="h-5 w-5 text-amber-600" />,
+  },
+  {
+    name: 'Silver',
+    minScore: 50,
+    color: 'bg-gray-400',
+    textColor: 'text-gray-700',
+    bgColor: 'bg-gray-50',
+    borderColor: 'border-gray-300',
+    icon: <Medal className="h-5 w-5 text-gray-500" />,
+  },
+  {
+    name: 'Bronze',
+    minScore: 25,
+    color: 'bg-amber-700',
+    textColor: 'text-amber-800',
+    bgColor: 'bg-amber-50',
+    borderColor: 'border-amber-500',
+    icon: <Shield className="h-5 w-5 text-amber-700" />,
+  },
+  {
+    name: 'Unranked',
+    minScore: 0,
+    color: 'bg-gray-300',
+    textColor: 'text-gray-600',
+    bgColor: 'bg-gray-50',
+    borderColor: 'border-gray-200',
+    icon: <BarChart3 className="h-5 w-5 text-gray-400" />,
+  },
+];
+
+const sizeConfig = {
+  sm: {
+    cardPadding: 'p-3',
+    scoreText: 'text-2xl',
+    titleSize: 'text-sm',
+    iconSize: 'h-4 w-4',
+    badgeSize: 'text-xs',
+    gap: 'gap-2',
+  },
+  md: {
+    cardPadding: 'p-4',
+    scoreText: 'text-3xl',
+    titleSize: 'text-base',
+    iconSize: 'h-5 w-5',
+    badgeSize: 'text-sm',
+    gap: 'gap-3',
+  },
+  lg: {
+    cardPadding: 'p-6',
+    scoreText: 'text-5xl',
+    titleSize: 'text-lg',
+    iconSize: 'h-6 w-6',
+    badgeSize: 'text-base',
+    gap: 'gap-4',
+  },
+};
+
+const LoadingSkeleton: React.FC<{ size: BadgeSize }> = ({ size }) => {
+  const cfg = sizeConfig[size];
+  return (
+    <Card>
+      <CardContent className={cfg.cardPadding}>
+        <div className="space-y-4 animate-pulse">
+          <div className={`flex items-center justify-between ${cfg.gap}`}>
+            <div className="h-4 bg-gray-200 rounded w-1/3"></div>
+            <div className="h-6 bg-gray-200 rounded w-16"></div>
+          </div>
+          <div className="flex justify-center">
+            <div className="h-12 bg-gray-200 rounded w-20"></div>
+          </div>
+          <div className="h-3 bg-gray-200 rounded w-full"></div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="h-4 bg-gray-200 rounded"></div>
+            <div className="h-4 bg-gray-200 rounded"></div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
+export const ReputationBadge: React.FC<ReputationBadgeProps> = ({
+  sdk,
+  address,
+  keypair,
+  size = 'md',
+}) => {
   const [reputationData, setReputationData] = useState<ReputationScoreResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showTooltip, setShowTooltip] = useState(false);
+  const [prevScore, setPrevScore] = useState<number | null>(null);
+  const [scoreChanged, setScoreChanged] = useState(false);
+
+  const cfg = sizeConfig[size];
 
   useEffect(() => {
     loadReputationData();
   }, [address]);
+
+  useEffect(() => {
+    if (prevScore !== null && reputationData && reputationData.score !== prevScore) {
+      setScoreChanged(true);
+      const timer = setTimeout(() => setScoreChanged(false), 1000);
+      return () => clearTimeout(timer);
+    }
+    if (reputationData) {
+      setPrevScore(reputationData.score);
+    }
+  }, [reputationData?.score]);
 
   const loadReputationData = async () => {
     try {
@@ -57,53 +193,8 @@ export const ReputationBadge: React.FC<ReputationBadgeProps> = ({ sdk, address, 
     }
   };
 
-  const getReputationTier = (score: number) => {
-    if (score >= 90) {
-      return {
-        tier: 'Excellent',
-        color: 'bg-green-500',
-        textColor: 'text-green-700',
-        bgColor: 'bg-green-50',
-        borderColor: 'border-green-200',
-        icon: <Award className="h-5 w-5" />
-      };
-    } else if (score >= 75) {
-      return {
-        tier: 'Good',
-        color: 'bg-blue-500',
-        textColor: 'text-blue-700',
-        bgColor: 'bg-blue-50',
-        borderColor: 'border-blue-200',
-        icon: <Star className="h-5 w-5" />
-      };
-    } else if (score >= 60) {
-      return {
-        tier: 'Fair',
-        color: 'bg-yellow-500',
-        textColor: 'text-yellow-700',
-        bgColor: 'bg-yellow-50',
-        borderColor: 'border-yellow-200',
-        icon: <Shield className="h-5 w-5" />
-      };
-    } else if (score >= 40) {
-      return {
-        tier: 'Poor',
-        color: 'bg-orange-500',
-        textColor: 'text-orange-700',
-        bgColor: 'bg-orange-50',
-        borderColor: 'border-orange-200',
-        icon: <AlertCircle className="h-5 w-5" />
-      };
-    } else {
-      return {
-        tier: 'Very Poor',
-        color: 'bg-red-500',
-        textColor: 'text-red-700',
-        bgColor: 'bg-red-50',
-        borderColor: 'border-red-200',
-        icon: <AlertCircle className="h-5 w-5" />
-      };
-    }
+  const getTier = (score: number): TierConfig => {
+    return TIERS.find(t => score >= t.minScore) || TIERS[TIERS.length - 1];
   };
 
   const getTrendIcon = (trend: 'up' | 'down' | 'stable') => {
@@ -117,17 +208,16 @@ export const ReputationBadge: React.FC<ReputationBadgeProps> = ({ sdk, address, 
     }
   };
 
+  const getScoreWithinTier = (score: number, tier: TierConfig): number => {
+    const tierIndex = TIERS.indexOf(tier);
+    if (tierIndex === 0) return 100;
+    const nextTierMin = TIERS[tierIndex - 1].minScore;
+    const range = nextTierMin - tier.minScore;
+    return ((score - tier.minScore) / range) * 100;
+  };
+
   if (loading) {
-    return (
-      <Card>
-        <CardContent className="p-6">
-          <div className="flex items-center justify-center">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-            <span className="ml-2">Loading reputation data...</span>
-          </div>
-        </CardContent>
-      </Card>
-    );
+    return <LoadingSkeleton size={size} />;
   }
 
   if (error) {
@@ -142,7 +232,7 @@ export const ReputationBadge: React.FC<ReputationBadgeProps> = ({ sdk, address, 
   if (!reputationData) {
     return (
       <Card>
-        <CardContent className="p-6">
+        <CardContent className={cfg.cardPadding}>
           <div className="text-center text-gray-500">
             <BarChart3 className="h-12 w-12 mx-auto mb-4 text-gray-400" />
             <p>No reputation data available</p>
@@ -152,47 +242,132 @@ export const ReputationBadge: React.FC<ReputationBadgeProps> = ({ sdk, address, 
     );
   }
 
-  const tier = getReputationTier(reputationData.score);
+  const tier = getTier(reputationData.score);
   const trend = sdk.reputation.calculateReputationTrend(reputationData.history);
+  const progressInTier = getScoreWithinTier(reputationData.score, tier);
 
   return (
     <div className="space-y-6">
-      <Card className={`${tier.bgColor} ${tier.borderColor} border-2`}>
+      <Card
+        className={`${tier.bgColor} ${tier.borderColor} border-2 transition-all duration-500 ${
+          scoreChanged ? 'scale-105 shadow-lg' : 'scale-100'
+        }`}
+      >
         <CardHeader>
           <div className="flex items-center justify-between">
-            <CardTitle className="flex items-center space-x-2">
-              {tier.icon}
+            <CardTitle className={`flex items-center space-x-2 ${cfg.titleSize}`}>
+              {React.cloneElement(tier.icon as React.ReactElement, {
+                className: `${cfg.iconSize} ${tier.textColor}`,
+              })}
               <span className={tier.textColor}>Reputation Score</span>
             </CardTitle>
-            <Badge className={`${tier.color} text-white`}>
-              {tier.tier}
-            </Badge>
+            <div className="relative">
+              <Badge
+                className={`${tier.color} text-white ${cfg.badgeSize} cursor-help`}
+                onMouseEnter={() => setShowTooltip(true)}
+                onMouseLeave={() => setShowTooltip(false)}
+                onClick={() => setShowTooltip(!showTooltip)}
+              >
+                {tier.name}
+              </Badge>
+              {showTooltip && reputationData && (
+                <div className="absolute top-full right-0 mt-2 w-72 bg-white border rounded-lg shadow-xl z-50 p-4">
+                  <div className="space-y-3">
+                    <div className="flex items-center space-x-2 border-b pb-2">
+                      {tier.icon}
+                      <span className="font-semibold">{tier.name} Tier</span>
+                    </div>
+                    <div className="space-y-2 text-sm">
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Score Range</span>
+                        <span className="font-medium">
+                          {tier.minScore} - {tier.name === 'Platinum' ? '100' : TIERS[TIERS.indexOf(tier) - 1]?.minScore ?? 100}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Total Transactions</span>
+                        <span className="font-medium">{reputationData.factors?.transactionCount || 'N/A'}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Success Rate</span>
+                        <span className="font-medium">
+                          {reputationData.factors?.successRate
+                            ? `${(reputationData.factors.successRate * 100).toFixed(1)}%`
+                            : 'N/A'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Credential Count</span>
+                        <span className="font-medium">{reputationData.factors?.credentialCount || 'N/A'}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Percentile</span>
+                        <span className="font-medium">{reputationData.percentile}%</span>
+                      </div>
+                    </div>
+                    <div className="border-t pt-2 text-xs text-gray-500">
+                      <p>Next tier: {
+                        TIERS[TIERS.indexOf(tier) - 1]?.name || 'Maximum'
+                      } at {
+                        TIERS[TIERS.indexOf(tier) - 1]?.minScore || reputationData.score
+                      } points</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </CardHeader>
         <CardContent>
-          <div className="space-y-4">
+          <div className={`space-y-4 ${cfg.gap}`}>
             <div className="text-center">
-              <div className="text-4xl font-bold mb-2">{reputationData.score}</div>
+              <div
+                className={`${cfg.scoreText} font-bold mb-2 transition-all duration-700 ${
+                  scoreChanged ? 'text-green-500' : tier.textColor
+                }`}
+              >
+                {reputationData.score}
+              </div>
               <div className="flex items-center justify-center space-x-2">
                 {getTrendIcon(trend.trend)}
                 <span className="text-sm text-gray-600">
-                  {trend.trend === 'up' ? '+' : ''}{trend.change.toFixed(1)} ({trend.percentage.toFixed(1)}%)
+                  {trend.trend === 'up' ? '+' : ''}{trend.change?.toFixed(1) || '0.0'} ({trend.percentage?.toFixed(1) || '0.0'}%)
                 </span>
               </div>
             </div>
             
-            <Progress value={reputationData.score} className="w-full" />
-            
-            <div className="grid grid-cols-2 gap-4 text-sm">
+            <div className="relative">
+              <Progress
+                value={reputationData.score}
+                className={`w-full transition-all duration-1000 ${tier.color}`}
+              />
+              <div className="flex justify-between text-xs text-gray-400 mt-1">
+                <span>0</span>
+                <span>25</span>
+                <span>50</span>
+                <span>75</span>
+                <span>100</span>
+              </div>
+            </div>
+
+            <div className={`grid grid-cols-2 gap-4 text-sm ${size === 'lg' ? '' : 'text-xs'}`}>
               <div>
                 <span className="text-gray-600">Percentile:</span>
                 <span className="ml-2 font-medium">{reputationData.percentile}%</span>
+              </div>
+              <div>
+                <span className="text-gray-600">Tier Progress:</span>
+                <span className="ml-2 font-medium">{Math.round(progressInTier)}%</span>
               </div>
               <div>
                 <span className="text-gray-600">Last Updated:</span>
                 <span className="ml-2 font-medium">
                   {new Date(reputationData.lastUpdated).toLocaleDateString()}
                 </span>
+              </div>
+              <div>
+                <span className="text-gray-600">Tier:</span>
+                <span className={`ml-2 font-medium ${tier.textColor}`}>{tier.name}</span>
               </div>
             </div>
           </div>
@@ -209,14 +384,17 @@ export const ReputationBadge: React.FC<ReputationBadgeProps> = ({ sdk, address, 
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
-              {Object.entries(reputationData.factors).map(([factor, count]) => (
+              {Object.entries(reputationData.factors || {}).map(([factor, count]) => (
                 <div key={factor} className="flex justify-between items-center">
                   <span className="text-sm font-medium capitalize">
                     {factor.replace(/_/g, ' ')}
                   </span>
-                  <Badge variant="outline">{count}</Badge>
+                  <Badge variant="outline">{String(count)}</Badge>
                 </div>
               ))}
+              {(!reputationData.factors || Object.keys(reputationData.factors).length === 0) && (
+                <p className="text-sm text-gray-400">No factor data available</p>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -230,7 +408,7 @@ export const ReputationBadge: React.FC<ReputationBadgeProps> = ({ sdk, address, 
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {reputationData.history.slice(-5).reverse().map((score, index) => (
+              {(reputationData.history || []).slice(-5).reverse().map((score, index) => (
                 <div key={index} className="flex justify-between items-center">
                   <span className="text-sm text-gray-600">
                     {index === 0 ? 'Current' : `${index} updates ago`}
@@ -238,6 +416,9 @@ export const ReputationBadge: React.FC<ReputationBadgeProps> = ({ sdk, address, 
                   <span className="font-medium">{score}</span>
                 </div>
               ))}
+              {(!reputationData.history || reputationData.history.length === 0) && (
+                <p className="text-sm text-gray-400">No history available</p>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -245,26 +426,26 @@ export const ReputationBadge: React.FC<ReputationBadgeProps> = ({ sdk, address, 
 
       <Card>
         <CardHeader>
-          <CardTitle>Reputation Insights</CardTitle>
+          <CardTitle className={cfg.titleSize}>Reputation Insights</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="text-center p-4 bg-gray-50 rounded-lg">
-                <div className="text-2xl font-bold text-blue-600">
+                <div className={`${cfg.scoreText} font-bold text-blue-600`}>
                   {reputationData.score}
                 </div>
                 <div className="text-sm text-gray-600">Current Score</div>
               </div>
               <div className="text-center p-4 bg-gray-50 rounded-lg">
-                <div className="text-2xl font-bold text-green-600">
+                <div className={`${size === 'lg' ? 'text-2xl' : 'text-xl'} font-bold text-green-600`}>
                   {reputationData.percentile}%
                 </div>
                 <div className="text-sm text-gray-600">Percentile Rank</div>
               </div>
               <div className="text-center p-4 bg-gray-50 rounded-lg">
-                <div className="text-2xl font-bold text-purple-600">
-                  {Object.keys(reputationData.factors).length}
+                <div className={`${size === 'lg' ? 'text-2xl' : 'text-xl'} font-bold text-purple-600`}>
+                  {Object.keys(reputationData.factors || {}).length}
                 </div>
                 <div className="text-sm text-gray-600">Active Factors</div>
               </div>
@@ -276,7 +457,7 @@ export const ReputationBadge: React.FC<ReputationBadgeProps> = ({ sdk, address, 
                 {reputationData.score < 60 && (
                   <li>• Focus on successful transactions to improve your score</li>
                 )}
-                {Object.keys(reputationData.factors).length < 3 && (
+                {Object.keys(reputationData.factors || {}).length < 3 && (
                   <li>• Obtain more verifiable credentials to strengthen your reputation</li>
                 )}
                 {trend.trend === 'down' && (

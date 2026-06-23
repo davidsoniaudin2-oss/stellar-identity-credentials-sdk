@@ -19,10 +19,10 @@ import {
   ReputationScoreResult,
   ReputationTierProof,
   StellarIdentityConfig,
-  StellarIdentityError,
   TransactionOptions,
   TrustEdge,
 } from './types';
+import { StellarIdentityError, mapContractError } from './errors';
 
 export class ReputationClient {
   private rpc: SorobanRpc.Server;
@@ -496,9 +496,6 @@ export class ReputationClient {
   }
 
   private handleError(error: unknown): StellarIdentityError {
-    const err = new Error(error instanceof Error ? error.message : String(error)) as StellarIdentityError;
-    err.code = (error as StellarIdentityError)?.code || 500;
-    err.type = (error as StellarIdentityError)?.type || 'UnknownError';
-    return err;
+    return mapContractError(error);
   }
 }

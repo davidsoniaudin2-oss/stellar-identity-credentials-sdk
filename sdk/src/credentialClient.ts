@@ -15,8 +15,8 @@ import {
   IssueCredentialOptions,
   TransactionOptions,
   CredentialVerificationResult,
-  StellarIdentityError,
 } from './types';
+import { StellarIdentityError, ConfigurationError, ErrorCode, mapContractError } from './errors';
 import { DIDClient } from './didClient';
 
 export class CredentialClient {
@@ -34,10 +34,7 @@ export class CredentialClient {
 
   private validateInput(condition: boolean, message: string): void {
     if (!condition) {
-      const err = new Error(message) as StellarIdentityError;
-      err.code = 400;
-      err.type = 'ValidationError';
-      throw err;
+      throw new ConfigurationError(ErrorCode.ConfigInvalidRpcUrl, message);
     }
   }
 
@@ -398,9 +395,6 @@ export class CredentialClient {
   }
 
   private handleError(error: unknown): StellarIdentityError {
-    const err = new Error(error instanceof Error ? error.message : String(error)) as StellarIdentityError;
-    err.code = (error as StellarIdentityError).code || 500;
-    err.type = (error as StellarIdentityError).type || 'UnknownError';
-    return err;
+    return mapContractError(error);
   }
 }

@@ -18,10 +18,10 @@ import {
   ZKVerificationResult,
   StellarIdentityConfig,
   TransactionOptions,
-  StellarIdentityError,
   CircuitType,
   ProofGenerationInputs,
 } from './types';
+import { StellarIdentityError, mapContractError } from './errors';
 
 export class ZKProofsClient {
   private rpc: SorobanRpc.Server;
@@ -832,9 +832,6 @@ export class ZKProofsClient {
   }
 
   private handleError(error: unknown): StellarIdentityError {
-    const err = new Error(error instanceof Error ? error.message : String(error)) as StellarIdentityError;
-    err.code = (error as StellarIdentityError).code || 500;
-    err.type = (error as StellarIdentityError).type || 'UnknownError';
-    return err;
+    return mapContractError(error);
   }
 }
