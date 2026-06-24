@@ -11,6 +11,14 @@ export { ReputationClient } from './reputation';
 export { ZKProofsClient } from './zkProofs';
 export { CacheManager, DataType } from './cacheManager';
 export { EventSubscriber } from './eventSubscriber';
+export { Logger, LogLevel } from './logger';
+export { DataMinimizationEngine } from './dataMinimization';
+export type { 
+  MinimalDisclosurePolicy, 
+  BlindedAttribute, 
+  SaltedHashCommitment, 
+  AttributeExpiration 
+} from './dataMinimization';
 
 export {
   ErrorCode,
