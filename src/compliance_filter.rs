@@ -153,6 +153,125 @@ impl ComplianceFilter {
         Ok(())
     }
 
+    /// Add an address to an existing sanctions list.
+    ///
+    /// The caller must be an authorized administrator. If the list is not found,
+    /// this returns `NotFound`.
+    pub fn add_to_sanctions_list(
+        env: Env,
+        admin: Address,
+        source: Bytes,
+        address: Address,
+        reason: Bytes,
+        jurisdiction: Bytes,
+    ) -> Result<(), ComplianceFilterError> {
+        admin.require_auth();
+
+        let list_key = CfKey::List(source.clone());
+        let mut list: SanctionsList = env
+            .storage()
+            .persistent()
+            .get(&list_key)
+            .ok_or(ComplianceFilterError::NotFound)?;
+
+        let entries_key = CfKey::Entries(source.clone());
+        let mut entries: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&entries_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut found = false;
+        for entry in entries.iter() {
+            if entry == address {
+                found = true;
+                break;
+            }
+        }
+
+        if !found {
+            entries.push_back(address.clone());
+            list.entry_count = entries.len() as u32;
+            list.last_updated = env.ledger().timestamp();
+
+            env.storage().persistent().set(&entries_key, &entries);
+            env.storage().persistent().extend_ttl(&entries_key, COMPLIANCE_TTL_LEDGERS, COMPLIANCE_TTL_LEDGERS);
+            env.storage().persistent().set(&list_key, &list);
+            env.storage().persistent().extend_ttl(&list_key, COMPLIANCE_TTL_LEDGERS, COMPLIANCE_TTL_LEDGERS);
+        }
+
+        let mut detail = Bytes::from_slice(&env, b"reason:");
+        detail.append(&reason);
+        detail.append(&Bytes::from_slice(&env, b",jurisdiction:"));
+        detail.append(&jurisdiction);
+        Self::append_audit(&env, &address, b"add_to_sanctions_list", &detail);
+
+        Ok(())
+    }
+
+    /// Remove an address from a sanctions list.
+    ///
+    /// The caller must be an authorized administrator. Returns `NotFound` if the
+    /// list or address entry does not exist.
+    pub fn remove_from_sanctions_list(
+        env: Env,
+        admin: Address,
+        source: Bytes,
+        address: Address,
+    ) -> Result<(), ComplianceFilterError> {
+        admin.require_auth();
+
+        let list_key = CfKey::List(source.clone());
+        let mut list: SanctionsList = env
+            .storage()
+            .persistent()
+            .get(&list_key)
+            .ok_or(ComplianceFilterError::NotFound)?;
+
+        let entries_key = CfKey::Entries(source.clone());
+        let entries: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&entries_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut updated_entries: Vec<Address> = Vec::new(&env);
+        let mut found = false;
+        for entry in entries.iter() {
+            if entry == address {
+                found = true;
+                continue;
+            }
+            updated_entries.push_back(entry);
+        }
+
+        if !found {
+            return Err(ComplianceFilterError::NotFound);
+        }
+
+        list.entry_count = updated_entries.len() as u32;
+        list.last_updated = env.ledger().timestamp();
+
+        env.storage().persistent().set(&entries_key, &updated_entries);
+        env.storage().persistent().extend_ttl(&entries_key, COMPLIANCE_TTL_LEDGERS, COMPLIANCE_TTL_LEDGERS);
+        env.storage().persistent().set(&list_key, &list);
+        env.storage().persistent().extend_ttl(&list_key, COMPLIANCE_TTL_LEDGERS, COMPLIANCE_TTL_LEDGERS);
+
+        Self::append_audit(
+            &env,
+            &address,
+            b"remove_from_sanctions_list",
+            &Bytes::from_slice(&env, b"removed"),
+        );
+        Ok(())
+    }
+
+    /// Return true if an address is currently sanctioned by any active list.
+    pub fn is_sanctioned(env: Env, address: Address) -> bool {
+        let (_, blocked) = Self::run_screening(&env, &address);
+        blocked
+    }
+
     pub fn deactivate_sanctions_list(
         env: Env,
         admin: Address,

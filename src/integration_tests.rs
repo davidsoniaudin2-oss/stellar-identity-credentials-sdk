@@ -232,6 +232,50 @@ fn test_compliance_enforcement() {
     );
 }
 
+#[test]
+fn test_sanctions_list_admin_management() {
+    let env = setup_env();
+    let admin = new_address(&env);
+    let offender = new_address(&env);
+    let source = Bytes::from_slice(&env, b"UN_LIST");
+    let hash = BytesN::from_array(&env, &[3u8; 32]);
+
+    ComplianceFilter::update_sanctions_list(
+        env.clone(),
+        admin.clone(),
+        source.clone(),
+        hash,
+        0,
+    )
+    .unwrap();
+
+    assert!(!ComplianceFilter::is_sanctioned(env.clone(), offender.clone()));
+
+    ComplianceFilter::add_to_sanctions_list(
+        env.clone(),
+        admin.clone(),
+        source.clone(),
+        offender.clone(),
+        Bytes::from_slice(&env, b"terror financing"),
+        Bytes::from_slice(&env, b"US"),
+    )
+    .unwrap();
+
+    assert!(ComplianceFilter::is_sanctioned(env.clone(), offender.clone()));
+    let screening = ComplianceFilter::screen_address(env.clone(), offender.clone());
+    assert!(screening.is_err());
+
+    ComplianceFilter::remove_from_sanctions_list(
+        env.clone(),
+        admin.clone(),
+        source.clone(),
+        offender.clone(),
+    )
+    .unwrap();
+
+    assert!(!ComplianceFilter::is_sanctioned(env.clone(), offender.clone()));
+}
+
 // =========================================================================
 // Test 4: ZK proof lifecycle
 // =========================================================================
