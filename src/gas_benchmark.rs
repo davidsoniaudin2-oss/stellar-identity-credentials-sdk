@@ -1,12 +1,5 @@
 #![cfg(test)]
 
-//! Gas consumption benchmarks for public contract functions (#58).
-//!
-//! These tests exercise the core contract functions and measure
-//! storage operations. They serve as regression guards — if a future
-//! change significantly increases storage reads/writes, these tests
-//! will still pass but CI can diff the output.
-
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
     vec, Address, Bytes, BytesN, Env, Map, Symbol, Vec,
@@ -17,7 +10,7 @@ use crate::{
     credential_issuer::CredentialIssuer,
     credential_schema::{CredentialSchema, FieldValidation},
     did_registry::DIDRegistry,
-    reputation_score::ReputationScore,
+    reputation_score::{ReputationScore, Config},
     zk_attestation::{CircuitType, ZKAttestation},
     Service, VerificationMethod,
 };
@@ -50,10 +43,6 @@ fn make_vm(env: &Env, id: &str, key: &[u8; 32]) -> VerificationMethod {
 fn make_did_bytes(env: &Env) -> Bytes {
     Bytes::from_slice(env, b"did:stellar:GABCDEF123456789")
 }
-
-// =========================================================================
-// DID Registry benchmarks
-// =========================================================================
 
 #[test]
 fn bench_create_did() {
@@ -100,10 +89,6 @@ fn bench_resolve_did() {
     std::println!("[BENCH] resolve_did           OK");
 }
 
-// =========================================================================
-// Credential Issuer benchmarks
-// =========================================================================
-
 #[test]
 fn bench_issue_credential() {
     let env = setup_env();
@@ -145,14 +130,19 @@ fn bench_verify_credential() {
     std::println!("[BENCH] verify_credential     OK");
 }
 
-// =========================================================================
-// Reputation Score benchmarks
-// =========================================================================
-
 #[test]
 fn bench_initialize_reputation() {
     let env = setup_env();
+    let admin = Address::generate(&env);
     let user = Address::generate(&env);
+    let config = Config {
+        max_score: 100,
+        transaction_success_weight: 10,
+        transaction_failure_weight: 5,
+        credential_valid_weight: 20,
+        credential_invalid_weight: 15,
+    };
+    ReputationScore::initialize(env.clone(), admin, config);
 
     let result = ReputationScore::initialize_reputation(env.clone(), user);
     assert!(result.is_ok());
@@ -162,17 +152,22 @@ fn bench_initialize_reputation() {
 #[test]
 fn bench_update_reputation() {
     let env = setup_env();
+    let admin = Address::generate(&env);
     let user = Address::generate(&env);
+    let config = Config {
+        max_score: 100,
+        transaction_success_weight: 10,
+        transaction_failure_weight: 5,
+        credential_valid_weight: 20,
+        credential_invalid_weight: 15,
+    };
+    ReputationScore::initialize(env.clone(), admin, config);
     let _ = ReputationScore::initialize_reputation(env.clone(), user.clone());
 
     let result = ReputationScore::update_transaction_reputation(env.clone(), user, true, 1000);
     assert!(result.is_ok());
     std::println!("[BENCH] update_tx_reputation  OK");
 }
-
-// =========================================================================
-// ZK Attestation benchmarks
-// =========================================================================
 
 #[test]
 fn bench_register_circuit() {
@@ -193,10 +188,6 @@ fn bench_register_circuit() {
     std::println!("[BENCH] register_circuit      OK");
 }
 
-// =========================================================================
-// Compliance Filter benchmarks
-// =========================================================================
-
 #[test]
 fn bench_screen_address() {
     let env = setup_env();
@@ -212,10 +203,6 @@ fn bench_screen_address() {
     assert!(result.is_ok());
     std::println!("[BENCH] screen_address(clear) OK");
 }
-
-// =========================================================================
-// Pagination benchmarks
-// =========================================================================
 
 #[test]
 fn bench_paginated_credentials() {
@@ -241,10 +228,6 @@ fn bench_paginated_credentials() {
     assert!(result.has_more);
     std::println!("[BENCH] paginated_creds(p0)   items={}", result.data.len());
 }
-
-// =========================================================================
-// Schema validation benchmark
-// =========================================================================
 
 #[test]
 fn bench_register_schema() {

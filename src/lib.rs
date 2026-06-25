@@ -17,7 +17,15 @@ mod fuzz_test_script;
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Symbol, Vec};
 
 pub use did_registry::DIDRegistry;
+pub use did_registry::MultiSigConfig;
+pub use did_registry::Signer;
+pub use did_registry::PendingMultiSigOperation;
 pub use credential_issuer::CredentialIssuer;
+pub use credential_issuer::DelegationAuthorization;
+pub use credential_issuer::DelegationChainEntry;
+pub use credential_issuer::RevocationRegistryEntry;
+pub use credential_issuer::RevocationProof;
+pub use credential_issuer::BatchRevocationRecord;
 pub use credential_schema::CredentialSchema;
 pub use reputation_score::ReputationScore;
 pub use zk_attestation::ZKAttestation;

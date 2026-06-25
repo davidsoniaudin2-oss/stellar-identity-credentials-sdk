@@ -1,8 +1,36 @@
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec,
+    contract, contracterror, contractimpl, contracttype, Address, Bytes, BytesN, Env, Symbol, Vec,
 };
 
 use crate::{DIDDocument, Service, VerificationMethod};
+
+// ---------------------------------------------------------------------------
+// Multi-Signature Types (#93)
+// ---------------------------------------------------------------------------
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct Signer {
+    pub address: Address,
+    pub weight: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct MultiSigConfig {
+    pub signers: Vec<Signer>,
+    pub threshold: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct PendingMultiSigOperation {
+    pub id: Bytes,
+    pub did: Bytes,
+    pub operation_data: Bytes,
+    pub approvals: Vec<Address>,
+    pub executed: bool,
+}
 
 // ---------------------------------------------------------------------------
 // Namespaced storage keys (#58)
@@ -13,6 +41,8 @@ use crate::{DIDDocument, Service, VerificationMethod};
 enum DidKey {
     Doc(Bytes),
     Controller(Address),
+    MultiSig(Bytes),
+    Operation(Bytes),
 }
 
 #[contracterror]
@@ -344,6 +374,337 @@ impl DIDRegistry {
         }
 
         true
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-Signature DID Operations (#93)
+    // -----------------------------------------------------------------------
+
+    pub fn configure_multisig(
+        env: Env,
+        controller: Address,
+        signers: Vec<Signer>,
+        threshold: u32,
+    ) -> Result<(), DIDRegistryError> {
+        controller.require_auth();
+
+        if signers.is_empty() {
+            return Err(DIDRegistryError::InvalidFormat);
+        }
+        if threshold == 0 || threshold > signers.len() as u32 {
+            return Err(DIDRegistryError::InvalidFormat);
+        }
+
+        let did: Bytes = env
+            .storage()
+            .persistent()
+            .get(&DidKey::Controller(controller.clone()))
+            .ok_or(DIDRegistryError::NotFound)?;
+
+        let mut doc: DIDDocument = env
+            .storage()
+            .persistent()
+            .get(&DidKey::Doc(did.clone()))
+            .ok_or(DIDRegistryError::NotFound)?;
+
+        if doc.deactivated {
+            return Err(DIDRegistryError::Deactivated);
+        }
+
+        let config = MultiSigConfig {
+            signers: signers.clone(),
+            threshold,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DidKey::MultiSig(did.clone()), &config);
+
+        doc.updated = env.ledger().timestamp();
+        env.storage()
+            .persistent()
+            .set(&DidKey::Doc(did.clone()), &doc);
+
+        env.events().publish(
+            (Symbol::new(&env, "MultiSigConfigured"),),
+            (did, controller, threshold),
+        );
+
+        Ok(())
+    }
+
+    pub fn get_multisig_config(
+        env: Env,
+        did: Bytes,
+    ) -> Option<MultiSigConfig> {
+        env.storage()
+            .persistent()
+            .get(&DidKey::MultiSig(did))
+    }
+
+    pub fn add_multisig_signer(
+        env: Env,
+        controller: Address,
+        signer: Signer,
+    ) -> Result<(), DIDRegistryError> {
+        controller.require_auth();
+
+        let did: Bytes = env
+            .storage()
+            .persistent()
+            .get(&DidKey::Controller(controller.clone()))
+            .ok_or(DIDRegistryError::NotFound)?;
+
+        let mut config: MultiSigConfig = env
+            .storage()
+            .persistent()
+            .get(&DidKey::MultiSig(did.clone()))
+            .ok_or(DIDRegistryError::NotFound)?;
+
+        for existing in config.signers.iter() {
+            if existing.address == signer.address {
+                return Err(DIDRegistryError::AlreadyExists);
+            }
+        }
+
+        config.signers.push_back(signer);
+        env.storage()
+            .persistent()
+            .set(&DidKey::MultiSig(did.clone()), &config);
+
+        Ok(())
+    }
+
+    pub fn remove_multisig_signer(
+        env: Env,
+        controller: Address,
+        signer_address: Address,
+    ) -> Result<(), DIDRegistryError> {
+        controller.require_auth();
+
+        let did: Bytes = env
+            .storage()
+            .persistent()
+            .get(&DidKey::Controller(controller.clone()))
+            .ok_or(DIDRegistryError::NotFound)?;
+
+        let mut config: MultiSigConfig = env
+            .storage()
+            .persistent()
+            .get(&DidKey::MultiSig(did.clone()))
+            .ok_or(DIDRegistryError::NotFound)?;
+
+        let mut found = false;
+        let mut new_signers: Vec<Signer> = Vec::new(&env);
+        for s in config.signers.iter() {
+            if s.address == signer_address {
+                found = true;
+            } else {
+                new_signers.push_back(s);
+            }
+        }
+
+        if !found {
+            return Err(DIDRegistryError::NotFound);
+        }
+
+        if config.threshold > new_signers.len() as u32 {
+            config.threshold = new_signers.len() as u32;
+        }
+
+        config.signers = new_signers;
+        env.storage()
+            .persistent()
+            .set(&DidKey::MultiSig(did), &config);
+
+        Ok(())
+    }
+
+    pub fn update_multisig_threshold(
+        env: Env,
+        controller: Address,
+        new_threshold: u32,
+    ) -> Result<(), DIDRegistryError> {
+        controller.require_auth();
+
+        let did: Bytes = env
+            .storage()
+            .persistent()
+            .get(&DidKey::Controller(controller.clone()))
+            .ok_or(DIDRegistryError::NotFound)?;
+
+        let mut config: MultiSigConfig = env
+            .storage()
+            .persistent()
+            .get(&DidKey::MultiSig(did.clone()))
+            .ok_or(DIDRegistryError::NotFound)?;
+
+        if new_threshold == 0 || new_threshold > config.signers.len() as u32 {
+            return Err(DIDRegistryError::InvalidFormat);
+        }
+
+        config.threshold = new_threshold;
+        env.storage()
+            .persistent()
+            .set(&DidKey::MultiSig(did), &config);
+
+        Ok(())
+    }
+
+    pub fn create_multisig_operation(
+        env: Env,
+        creator: Address,
+        did: Bytes,
+        operation_data: Bytes,
+    ) -> Result<Bytes, DIDRegistryError> {
+        creator.require_auth();
+
+        let config: MultiSigConfig = env
+            .storage()
+            .persistent()
+            .get(&DidKey::MultiSig(did.clone()))
+            .ok_or(DIDRegistryError::NotFound)?;
+
+        let mut is_authorized = false;
+        for signer in config.signers.iter() {
+            if signer.address == creator {
+                is_authorized = true;
+                break;
+            }
+        }
+        if !is_authorized {
+            return Err(DIDRegistryError::Unauthorized);
+        }
+
+        let operation_id = Self::generate_operation_id(&env, &did);
+        let operation = PendingMultiSigOperation {
+            id: operation_id.clone(),
+            did,
+            operation_data,
+            approvals: Vec::new(&env),
+            executed: false,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DidKey::Operation(operation_id.clone()), &operation);
+
+        env.events().publish(
+            (Symbol::new(&env, "MultiSigOperationCreated"),),
+            (operation_id.clone(), creator),
+        );
+
+        Ok(operation_id)
+    }
+
+    pub fn sign_multisig_operation(
+        env: Env,
+        signer: Address,
+        operation_id: Bytes,
+    ) -> Result<(), DIDRegistryError> {
+        signer.require_auth();
+
+        let mut operation: PendingMultiSigOperation = env
+            .storage()
+            .persistent()
+            .get(&DidKey::Operation(operation_id.clone()))
+            .ok_or(DIDRegistryError::NotFound)?;
+
+        if operation.executed {
+            return Err(DIDRegistryError::AlreadyExists);
+        }
+
+        let config: MultiSigConfig = env
+            .storage()
+            .persistent()
+            .get(&DidKey::MultiSig(operation.did.clone()))
+            .ok_or(DIDRegistryError::NotFound)?;
+
+        let mut is_valid_signer = false;
+        for s in config.signers.iter() {
+            if s.address == signer {
+                is_valid_signer = true;
+                break;
+            }
+        }
+        if !is_valid_signer {
+            return Err(DIDRegistryError::Unauthorized);
+        }
+
+        for approval in operation.approvals.iter() {
+            if approval == signer {
+                return Err(DIDRegistryError::AlreadyExists);
+            }
+        }
+
+        operation.approvals.push_back(signer);
+        env.storage()
+            .persistent()
+            .set(&DidKey::Operation(operation_id), &operation);
+
+        env.events().publish(
+            (Symbol::new(&env, "MultiSigOperationSigned"),),
+            (operation_id, signer),
+        );
+
+        Ok(())
+    }
+
+    pub fn execute_multisig_operation(
+        env: Env,
+        executor: Address,
+        operation_id: Bytes,
+    ) -> Result<Bytes, DIDRegistryError> {
+        executor.require_auth();
+
+        let mut operation: PendingMultiSigOperation = env
+            .storage()
+            .persistent()
+            .get(&DidKey::Operation(operation_id.clone()))
+            .ok_or(DIDRegistryError::NotFound)?;
+
+        if operation.executed {
+            return Err(DIDRegistryError::AlreadyExists);
+        }
+
+        let config: MultiSigConfig = env
+            .storage()
+            .persistent()
+            .get(&DidKey::MultiSig(operation.did.clone()))
+            .ok_or(DIDRegistryError::NotFound)?;
+
+        if operation.approvals.len() as u32 < config.threshold {
+            return Err(DIDRegistryError::Unauthorized);
+        }
+
+        operation.executed = true;
+        env.storage()
+            .persistent()
+            .set(&DidKey::Operation(operation_id.clone()), &operation);
+
+        env.events().publish(
+            (Symbol::new(&env, "MultiSigOperationExecuted"),),
+            (operation_id.clone(), executor, operation.operation_data.clone()),
+        );
+
+        Ok(operation.operation_data)
+    }
+
+    pub fn get_pending_multisig_operation(
+        env: Env,
+        operation_id: Bytes,
+    ) -> Option<PendingMultiSigOperation> {
+        env.storage()
+            .persistent()
+            .get(&DidKey::Operation(operation_id))
+    }
+
+    fn generate_operation_id(env: &Env, did: &Bytes) -> Bytes {
+        let mut id = Bytes::from_slice(env, b"op:");
+        id.append(&Bytes::from_slice(env, env.ledger().timestamp().to_string().as_bytes()));
+        id.append(&Bytes::from_slice(env, b":"));
+        id.append(&Bytes::from_slice(env, env.ledger().sequence().to_string().as_bytes()));
+        id
     }
 }
 

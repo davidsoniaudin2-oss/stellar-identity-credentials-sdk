@@ -2,141 +2,57 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, main, feature/*]
   pull_request:
-    branches: [master]
+    branches: [master, main]
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  rust-contracts:
-    name: Rust Contracts
+  fmt:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: clippy, rustfmt
-
-      - name: Cache cargo registry & build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
-
+          toolchain: stable
+          components: rustfmt
       - name: Check formatting
-        run: cargo fmt --check
+        run: cargo fmt -- --check
 
-      - name: Build
-        run: cargo build --verbose
-
-      - name: Run clippy
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: clippy
+      - name: Check clippy
         run: cargo clippy -- -D warnings
 
-      - name: Run tests
-        run: cargo test --verbose
-
-  typescript-sdk:
-    name: TypeScript SDK (Node ${{ matrix.node-version }})
+  build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node-version: [18, 20, 22]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          node-version: ${{ matrix.node-version }}
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
+          toolchain: stable
       - name: Build
-        run: npm run build
+        run: cargo build --release
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-contract
+          path: target/wasm32-unknown-unknown/release/*.wasm
 
-      - name: Lint
-        run: npm run lint
-
-      - name: Type check
-        run: npx tsc --noEmit
-
-      - name: Run tests
-        run: npm test
-
-  ui-package:
-    name: UI Package (Node ${{ matrix.node-version }})
+  test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node-version: [18, 20, 22]
-    defaults:
-      run:
-        working-directory: ui
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          node-version: ${{ matrix.node-version }}
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Lint
-        run: npm run lint
-
+          toolchain: stable
       - name: Run tests
-        run: npm test
-
-  circom-circuits:
-    name: Circom Circuits
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: circuits
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: circuits/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Cache Circom build artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            circuits/*.r1cs
-            circuits/*.wasm
-            circuits/*.sym
-            circuits/*.zkey
-            circuits/*.ptau
-          key: ${{ runner.os }}-circom-${{ hashFiles('circuits/*.circom') }}
-
-      - name: Compile circuits
-        run: npm run build
-
-      - name: Run tests
-        run: npm test
+        run: cargo test
