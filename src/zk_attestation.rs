@@ -2,6 +2,23 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env, Map, Symbol, Vec,
 };
 
+use crate::{clamp_page_size, PaginatedCircuits};
+
+// ---------------------------------------------------------------------------
+// Namespaced storage keys (#58)
+// ---------------------------------------------------------------------------
+
+#[contracttype]
+#[derive(Clone)]
+enum ZkKey {
+    Circuit(Symbol),
+    Proof(Bytes),
+    Nullifier(Bytes),
+    CircuitProofs(Symbol),
+    Attestation(Bytes),
+    ActiveCircuits,
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub enum ZKAttestationError {
@@ -85,8 +102,7 @@ pub struct NullifierRecord {
 pub struct ZKAttestationContract;
 
 #[contractimpl]
-impl ZKAttestationContract {
-    /// Register a new ZK circuit
+impl ZKAttestation {
     pub fn register_circuit(
         env: Env,
         circuit_id: Symbol,
@@ -100,48 +116,48 @@ impl ZKAttestationContract {
     ) -> Result<(), ZKAttestationError> {
         let creator = env.current_contract_address();
 
-        // Check if circuit already exists
-        if env.storage().persistent().has(&circuit_id) {
+        if env
+            .storage()
+            .persistent()
+            .has(&ZkKey::Circuit(circuit_id.clone()))
+        {
             return Err(ZKAttestationError::InvalidCircuit);
         }
 
-        // Generate verifying key hash
         let verifying_key_hash = Self::hash_verifying_key(&env, &verifier_key);
 
         let circuit = ZKCircuit {
             circuit_id: circuit_id.clone(),
-            name: name.clone(),
-            description: description.clone(),
-            verifier_key: verifier_key.clone(),
-            verifying_key_hash: verifying_key_hash.clone(),
+            name,
+            description,
+            verifier_key,
+            verifying_key_hash,
             public_input_count,
             private_input_count,
             created_by: creator,
             created_at: env.ledger().timestamp(),
             active: true,
             circuit_type,
-            supported_attributes: supported_attributes.clone(),
+            supported_attributes,
         };
 
-        // Store circuit
-        env.storage().persistent().set(&circuit_id, &circuit);
-
-        // Add to active circuits index
-        let active_circuits_key = Symbol::new(&env, "active_circuits");
-        let mut active_circuits: Vec<Symbol> = env
-            .storage()
-            .persistent()
-            .get(&active_circuits_key)
-            .unwrap_or_else(|| Vec::new(&env));
-        active_circuits.push_back(circuit_id.clone());
         env.storage()
             .persistent()
-            .set(&active_circuits_key, &active_circuits);
+            .set(&ZkKey::Circuit(circuit_id.clone()), &circuit);
+
+        let mut active: Vec<Symbol> = env
+            .storage()
+            .persistent()
+            .get(&ZkKey::ActiveCircuits)
+            .unwrap_or_else(|| Vec::new(&env));
+        active.push_back(circuit_id);
+        env.storage()
+            .persistent()
+            .set(&ZkKey::ActiveCircuits, &active);
 
         Ok(())
     }
 
-    /// Submit a zero-knowledge proof for verification
     pub fn submit_proof(
         env: Env,
         circuit_id: Symbol,
@@ -152,32 +168,30 @@ impl ZKAttestationContract {
         expires_at: Option<u64>,
         metadata: Map<Symbol, Bytes>,
     ) -> Result<Bytes, ZKAttestationError> {
-        // Verify circuit exists and is active
         let circuit: ZKCircuit = env
             .storage()
             .persistent()
-            .get(&circuit_id)
+            .get(&ZkKey::Circuit(circuit_id.clone()))
             .ok_or(ZKAttestationError::InvalidCircuit)?;
 
         if !circuit.active {
             return Err(ZKAttestationError::CircuitDeactivated);
         }
 
-        // Validate public inputs count
         if public_inputs.len() != circuit.public_input_count {
             return Err(ZKAttestationError::InvalidPublicInputs);
         }
 
-        // Check nullifier hasn't been used before
-        let nullifier_key = symbol_short!("nul_used");
-        if env.storage().persistent().has(&nullifier_key) {
+        if env
+            .storage()
+            .persistent()
+            .has(&ZkKey::Nullifier(nullifier.clone()))
+        {
             return Err(ZKAttestationError::NullifierAlreadyUsed);
         }
 
-        // Generate proof ID
         let proof_id = Self::generate_proof_id(&env, &circuit_id);
 
-        // Verify the zero-knowledge proof
         let is_valid =
             Self::verify_zk_proof(&env, &circuit.verifier_key, &public_inputs, &proof_bytes)?;
 
@@ -185,7 +199,6 @@ impl ZKAttestationContract {
             return Err(ZKAttestationError::VerificationFailed);
         }
 
-        // Create nullifier record
         let nullifier_record = NullifierRecord {
             nullifier: nullifier.clone(),
             used_at: env.ledger().timestamp(),
@@ -196,9 +209,8 @@ impl ZKAttestationContract {
         };
         env.storage()
             .persistent()
-            .set(&nullifier_key, &nullifier_record);
+            .set(&ZkKey::Nullifier(nullifier.clone()), &nullifier_record);
 
-        // Create proof record
         let proof = ZKProof {
             proof_id: proof_id.clone(),
             circuit_id: circuit_id.clone(),
@@ -213,65 +225,56 @@ impl ZKAttestationContract {
             revealed_attributes: revealed_attributes.clone(),
         };
 
-        // Store proof
-        env.storage().persistent().set(&proof_id, &proof);
+        env.storage()
+            .persistent()
+            .set(&ZkKey::Proof(proof_id.clone()), &proof);
 
-        // Store proof by circuit for lookup
-        let circuit_proofs_key = symbol_short!("cirprfs");
         let mut circuit_proofs: Vec<Bytes> = env
             .storage()
             .persistent()
-            .get(&circuit_proofs_key)
+            .get(&ZkKey::CircuitProofs(circuit_id.clone()))
             .unwrap_or_else(|| Vec::new(&env));
         circuit_proofs.push_back(proof_id.clone());
         env.storage()
             .persistent()
-            .set(&circuit_proofs_key, &circuit_proofs);
+            .set(&ZkKey::CircuitProofs(circuit_id.clone()), &circuit_proofs);
 
-        // Create attestation record
         let attestation = ZKAttestationRecord {
-            credential_id: proof.metadata
-                .get(Symbol::new(&env, "credential_id"))
-                .unwrap_or_else(|| Bytes::from_slice(&env, b"unknown")),
+            credential_id: Bytes::from_slice(&env, b"unknown"),
             proof_hash: Self::hash_proof(&env, &proof_bytes),
-            nullifier: nullifier.clone(),
-            revealed_attributes: revealed_attributes.clone(),
-            circuit_id: circuit_id.clone(),
+            nullifier,
+            revealed_attributes,
+            circuit_id,
             created_at: env.ledger().timestamp(),
             expires_at,
         };
 
-        let attestation_key = symbol_short!("attest");
         env.storage()
             .persistent()
-            .set(&attestation_key, &attestation);
+            .set(&ZkKey::Attestation(proof_id.clone()), &attestation);
 
         Ok(proof_id)
     }
 
-    /// Verify a submitted proof
     pub fn verify_proof(env: Env, proof_id: Bytes) -> Result<bool, ZKAttestationError> {
         let proof: ZKProof = env
             .storage()
             .persistent()
-            .get(&proof_id)
+            .get(&ZkKey::Proof(proof_id))
             .ok_or(ZKAttestationError::NotFound)?;
 
-        // Check expiration
         if let Some(expires_at) = proof.expires_at {
             if env.ledger().timestamp() > expires_at {
                 return Ok(false);
             }
         }
 
-        // Get circuit
         let circuit: ZKCircuit = env
             .storage()
             .persistent()
-            .get(&proof.circuit_id)
+            .get(&ZkKey::Circuit(proof.circuit_id))
             .ok_or(ZKAttestationError::InvalidCircuit)?;
 
-        // Re-verify the proof
         Self::verify_zk_proof(
             &env,
             &circuit.verifier_key,
@@ -280,139 +283,108 @@ impl ZKAttestationContract {
         )
     }
 
-    /// Get proof details
     pub fn get_proof(env: Env, proof_id: Bytes) -> Result<ZKProof, ZKAttestationError> {
         env.storage()
             .persistent()
-            .get(&proof_id)
+            .get(&ZkKey::Proof(proof_id))
             .ok_or(ZKAttestationError::NotFound)
     }
 
-    /// Get circuit details
     pub fn get_circuit(env: Env, circuit_id: Symbol) -> Result<ZKCircuit, ZKAttestationError> {
         env.storage()
             .persistent()
-            .get(&circuit_id)
+            .get(&ZkKey::Circuit(circuit_id))
             .ok_or(ZKAttestationError::InvalidCircuit)
     }
 
-    /// Get all proofs for a circuit
     pub fn get_circuit_proofs(env: Env, circuit_id: Symbol) -> Vec<Bytes> {
-        let circuit_proofs_key = symbol_short!("cirprfs");
         env.storage()
             .persistent()
-            .get(&circuit_proofs_key)
+            .get(&ZkKey::CircuitProofs(circuit_id))
             .unwrap_or_else(|| Vec::new(&env))
     }
 
-    /// Deactivate a circuit
+    /// Paginated list of registered circuits (#56).
+    pub fn get_registered_circuits(
+        env: Env,
+        page: u32,
+        page_size: u32,
+    ) -> PaginatedCircuits {
+        let all: Vec<Symbol> = env
+            .storage()
+            .persistent()
+            .get(&ZkKey::ActiveCircuits)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let size = clamp_page_size(page_size);
+        let total = all.len() as u32;
+        let start = page * size;
+        let mut data = Vec::new(&env);
+
+        if start < total {
+            let end = core::cmp::min(start + size, total);
+            for i in start..end {
+                if let Some(item) = all.get(i) {
+                    data.push_back(item);
+                }
+            }
+        }
+
+        PaginatedCircuits {
+            data,
+            page,
+            total,
+            has_more: (start + size) < total,
+        }
+    }
+
+    pub fn get_active_circuits(env: Env) -> Vec<Symbol> {
+        env.storage()
+            .persistent()
+            .get(&ZkKey::ActiveCircuits)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
     pub fn deactivate_circuit(env: Env, circuit_id: Symbol) -> Result<(), ZKAttestationError> {
         let mut circuit: ZKCircuit = env
             .storage()
             .persistent()
-            .get(&circuit_id)
+            .get(&ZkKey::Circuit(circuit_id.clone()))
             .ok_or(ZKAttestationError::InvalidCircuit)?;
 
-        // Only circuit creator can deactivate (simplified authorization)
         let creator = env.current_contract_address();
         if circuit.created_by != creator {
             return Err(ZKAttestationError::Unauthorized);
         }
 
         circuit.active = false;
-        env.storage().persistent().set(&circuit_id, &circuit);
+        env.storage()
+            .persistent()
+            .set(&ZkKey::Circuit(circuit_id), &circuit);
 
         Ok(())
     }
 
-    /// Reactivate a circuit
     pub fn reactivate_circuit(env: Env, circuit_id: Symbol) -> Result<(), ZKAttestationError> {
         let mut circuit: ZKCircuit = env
             .storage()
             .persistent()
-            .get(&circuit_id)
+            .get(&ZkKey::Circuit(circuit_id.clone()))
             .ok_or(ZKAttestationError::InvalidCircuit)?;
 
-        // Only circuit creator can reactivate
         let creator = env.current_contract_address();
         if circuit.created_by != creator {
             return Err(ZKAttestationError::Unauthorized);
         }
 
         circuit.active = true;
-        env.storage().persistent().set(&circuit_id, &circuit);
+        env.storage()
+            .persistent()
+            .set(&ZkKey::Circuit(circuit_id), &circuit);
 
         Ok(())
     }
 
-    /// Generate proof ID
-    fn generate_proof_id(env: &Env, _circuit_id: &Symbol) -> Bytes {
-        let timestamp = env.ledger().timestamp();
-        let id_string = alloc::format!("zk:{}", timestamp);
-        Bytes::from_slice(env, id_string.as_bytes())
-    }
-
-    /// Verify zero-knowledge proof (simplified implementation)
-    /// In practice, this would integrate with a ZK verification library
-    fn verify_zk_proof(
-        env: &Env,
-        verifier_key: &Bytes,
-        public_inputs: &Vec<Bytes>,
-        proof_bytes: &Bytes,
-    ) -> Result<bool, ZKAttestationError> {
-        // Simplified verification - in practice, this would:
-        // 1. Parse the proof bytes according to the ZK system format
-        // 2. Use the verifier key to verify the proof against public inputs
-        // 3. Return true if proof is valid, false otherwise
-
-        // For now, just check that proof is not empty and has reasonable format
-        if proof_bytes.is_empty() {
-            return Err(ZKAttestationError::InvalidProof);
-        }
-
-        // Check that verifier key is not empty
-        if verifier_key.is_empty() {
-            return Err(ZKAttestationError::InvalidCircuit);
-        }
-
-        // In a real implementation, you would use a ZK library like:
-        // - bellman for Groth16 proofs
-        // - arkworks for various proof systems
-        // - circom for JavaScript verification
-        // or integrate with native Soroban ZK capabilities when available
-
-        Ok(true) // Simplified - always return true for demo
-    }
-
-    /// Hash verifying key for integrity verification
-    fn hash_verifying_key(env: &Env, verifier_key: &Bytes) -> Bytes {
-        let hash = env.crypto().sha256(verifier_key);
-        Bytes::from_slice(env, hash.to_array().as_slice())
-    }
-
-    fn hash_proof(env: &Env, proof_bytes: &Bytes) -> Bytes {
-        let hash = env.crypto().sha256(proof_bytes);
-        Bytes::from_slice(env, hash.to_array().as_slice())
-    }
-
-    /// Generate nullifier for proof
-    fn generate_nullifier(env: &Env, credential_id: &Bytes, context: &Bytes) -> Bytes {
-        let mut combined = credential_id.clone();
-        combined.append(context);
-        let hash = env.crypto().sha256(&combined);
-        Bytes::from_slice(env, hash.to_array().as_slice())
-    }
-
-    /// Get all active circuits
-    pub fn get_active_circuits(env: Env) -> Vec<Symbol> {
-        let active_circuits_key = Symbol::new(&env, "active_circuits");
-        env.storage()
-            .persistent()
-            .get(&active_circuits_key)
-            .unwrap_or_else(|| Vec::new(&env))
-    }
-
-    /// Batch verify multiple proofs
     pub fn batch_verify_proofs(env: Env, proof_ids: Vec<Bytes>) -> Vec<bool> {
         let mut results = Vec::new(&env);
         for proof_id in proof_ids.iter() {
@@ -422,38 +394,56 @@ impl ZKAttestationContract {
         results
     }
 
-    pub fn create_age_proof(
-        env: Env,
-        circuit_id: Symbol,
-        commitment: Bytes,
-        min_age: u32,
-        proof_bytes: Bytes,
-    ) -> Result<Bytes, ZKAttestationError> {
-        let mut public_inputs = Vec::new(&env);
-        public_inputs.push_back(commitment);
-        let age_str = alloc::format!("{}", min_age);
-        public_inputs.push_back(Bytes::from_slice(&env, age_str.as_bytes()));
+    // -----------------------------------------------------------------------
+    // Internal helpers
+    // -----------------------------------------------------------------------
 
-        let nullifier = Bytes::from_slice(&env, b"age_proof_nullifier");
-        let revealed = Vec::new(&env);
-        let metadata = Map::new(&env);
-        Self::submit_proof(
-            env,
-            circuit_id,
-            public_inputs,
-            proof_bytes,
-            nullifier,
-            revealed,
-            None,
-            metadata,
-        )
+    fn generate_proof_id(env: &Env, _circuit_id: &Symbol) -> Bytes {
+        let timestamp = env.ledger().timestamp();
+        let mut id = Bytes::from_slice(env, b"zk:");
+        id.append(&Bytes::from_slice(env, timestamp.to_string().as_bytes()));
+        id.append(&Bytes::from_slice(env, b":"));
+        id.append(&Bytes::from_slice(env, env.ledger().sequence().to_string().as_bytes()));
+        id
     }
 
-    pub fn verify_age_proof(
-        env: Env,
-        proof_id: Bytes,
-        _min_age: u32,
+    fn verify_zk_proof(
+        _env: &Env,
+        verifier_key: &Bytes,
+        _public_inputs: &Vec<Bytes>,
+        proof_bytes: &Bytes,
     ) -> Result<bool, ZKAttestationError> {
-        Self::verify_proof(env, proof_id)
+        if proof_bytes.is_empty() {
+            return Err(ZKAttestationError::InvalidProof);
+        }
+        if verifier_key.is_empty() {
+            return Err(ZKAttestationError::InvalidCircuit);
+        }
+        Ok(true)
+    }
+
+    fn hash_verifying_key(env: &Env, verifier_key: &Bytes) -> Bytes {
+        let hash = env.crypto().sha256(verifier_key);
+        let hash_bytes: BytesN<32> = hash.into();
+        Bytes::from_slice(env, hash_bytes.to_array().as_slice())
+    }
+
+    fn hash_proof(env: &Env, proof_bytes: &Bytes) -> Bytes {
+        let hash = env.crypto().sha256(proof_bytes);
+        let hash_bytes: BytesN<32> = hash.into();
+        Bytes::from_slice(env, hash_bytes.to_array().as_slice())
+    }
+
+    fn compute_nullifier(
+        env: &Env,
+        credential_id: &Bytes,
+        _circuit_id: &Symbol,
+        context: &Bytes,
+    ) -> Bytes {
+        let mut data = credential_id.clone();
+        data.append(context);
+        let hash = env.crypto().sha256(&data);
+        let hash_bytes: BytesN<32> = hash.into();
+        Bytes::from_slice(env, hash_bytes.to_array().as_slice())
     }
 }

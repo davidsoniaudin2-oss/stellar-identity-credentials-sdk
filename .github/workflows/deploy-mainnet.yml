@@ -1,0 +1,208 @@
+name: Deploy to Stellar Mainnet
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry-run mode (build & verify only, no deploy)"
+        required: false
+        default: "true"
+        type: boolean
+      confirm_mainnet:
+        description: "Type DEPLOY to confirm mainnet deployment"
+        required: true
+        type: string
+
+env:
+  SOROBAN_RPC_URL: "https://soroban-rpc.mainnet.stellar.gateway.fm"
+  SOROBAN_NETWORK_PASSPHRASE: "Public Global Stellar Network ; September 2015"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gate:
+    name: Deployment Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify confirmation
+        if: ${{ github.event.inputs.confirm_mainnet != 'DEPLOY' }}
+        run: |
+          echo "::error::You must type DEPLOY in the confirmation field to deploy to mainnet."
+          exit 1
+
+  build:
+    name: Build WASM Binaries
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install Soroban CLI
+        run: cargo install --locked soroban-cli
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-mainnet-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build all contracts
+        run: soroban contract build
+
+      - name: Optimize WASM binaries
+        run: |
+          for wasm in target/wasm32-unknown-unknown/release/*.wasm; do
+            soroban contract optimize --wasm "$wasm"
+          done
+
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-binaries-mainnet
+          path: target/wasm32-unknown-unknown/release/*.optimized.wasm
+          retention-days: 90
+
+  test:
+    name: Run Full Test Suite
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run tests
+        run: cargo test --release -- --nocapture
+
+  deploy:
+    name: Deploy to Mainnet
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.dry_run != 'true' }}
+    environment: mainnet
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Soroban CLI
+        run: cargo install --locked soroban-cli
+
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-binaries-mainnet
+          path: wasm/
+
+      - name: Configure Soroban identity
+        run: |
+          soroban keys add deployer --secret-key "${{ secrets.MAINNET_SECRET_KEY }}"
+
+      - name: Deploy contracts
+        id: deploy
+        run: |
+          declare -A addresses
+          declare -A hashes
+          for wasm in wasm/*.optimized.wasm; do
+            name=$(basename "$wasm" .optimized.wasm)
+            hash=$(sha256sum "$wasm" | cut -d' ' -f1)
+            hashes[$name]=$hash
+            echo "Deploying $name (sha256: $hash)..."
+            addr=$(soroban contract deploy \
+              --wasm "$wasm" \
+              --source deployer \
+              --rpc-url "$SOROBAN_RPC_URL" \
+              --network-passphrase "$SOROBAN_NETWORK_PASSPHRASE")
+            addresses[$name]=$addr
+            echo "  -> $addr"
+          done
+
+          # Write deployment manifest
+          echo "{" > mainnet-deployment.json
+          first=true
+          for name in "${!addresses[@]}"; do
+            if [ "$first" = true ]; then first=false; else echo "," >> mainnet-deployment.json; fi
+            echo "  \"$name\": {\"address\": \"${addresses[$name]}\", \"wasm_hash\": \"${hashes[$name]}\"}" >> mainnet-deployment.json
+          done
+          echo "}" >> mainnet-deployment.json
+
+          cat mainnet-deployment.json
+
+      - name: Upload deployment manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: mainnet-deployment
+          path: mainnet-deployment.json
+          retention-days: 365
+
+      - name: Update SDK config
+        run: |
+          if [ -f sdk/src/config.ts ]; then
+            echo "Updating SDK contract addresses for mainnet..."
+            cp mainnet-deployment.json sdk/src/mainnet-deployment.json
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mainnet-${{ github.sha }}
+          name: "Mainnet Deployment ${{ github.sha }}"
+          body_path: mainnet-deployment.json
+          files: |
+            wasm/*.optimized.wasm
+            mainnet-deployment.json
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify via webhook
+        if: always()
+        run: |
+          if [ -n "${{ secrets.NOTIFICATION_WEBHOOK_URL }}" ]; then
+            status="${{ job.status }}"
+            curl -s -X POST "${{ secrets.NOTIFICATION_WEBHOOK_URL }}" \
+              -H "Content-Type: application/json" \
+              -d "{\"text\":\"MAINNET deployment $status for ${{ github.repository }} (commit ${{ github.sha }})\"}" || true
+          fi
+
+  dry-run:
+    name: Dry Run (Build & Verify Only)
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.dry_run == 'true' }}
+    steps:
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-binaries-mainnet
+          path: wasm/
+
+      - name: Verify WASM binaries
+        run: |
+          echo "=== Dry Run: WASM Binary Verification ==="
+          for wasm in wasm/*.optimized.wasm; do
+            name=$(basename "$wasm" .optimized.wasm)
+            size=$(stat -c%s "$wasm")
+            hash=$(sha256sum "$wasm" | cut -d' ' -f1)
+            echo "$name: size=${size}B  sha256=$hash"
+          done
+          echo ""
+          echo "Dry run complete. Set dry_run=false and confirm_mainnet=DEPLOY to deploy."

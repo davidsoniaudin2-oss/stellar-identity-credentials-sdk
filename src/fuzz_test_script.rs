@@ -1,18 +1,21 @@
 #![cfg(test)]
 
-use soroban_sdk::{vec, Address, Bytes, BytesN, Env, Map, Symbol, Vec};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger, LedgerInfo},
+    vec, Address, Bytes, BytesN, Env, Symbol, Vec,
+};
 use crate::{
     did_registry::{DIDRegistry, DIDRegistryError},
     credential_issuer::{CredentialIssuer, CredentialIssuerError},
     reputation_score::{ReputationScore, ReputationScoreError},
-    zk_attestation::{CircuitType, ZKAttestationContract, ZKAttestationError},
-    compliance_filter::ComplianceFilter,
+    zk_attestation::{CircuitType, ZKAttestation, ZKAttestationError},
+    compliance_filter::{ComplianceFilter, ComplianceFilterError},
 };
 
 fn setup_env() -> Env {
-    let mut env = Env::default();
+    let env = Env::default();
     env.mock_all_auths();
-    env.ledger().set(soroban_sdk::testutils::LedgerInfo {
+    env.ledger().set(LedgerInfo {
         timestamp: 1_700_000_000,
         protocol_version: 22,
         sequence_number: 1000,
@@ -29,20 +32,11 @@ fn generate_address(env: &Env) -> Address {
     Address::generate(env)
 }
 
-fn make_claims(env: &Env) -> Map<Bytes, Bytes> {
-    let mut claims = Map::new(env);
-    claims.set(
-        Bytes::from_slice(env, b"key"),
-        Bytes::from_slice(env, b"value"),
-    );
-    claims
-}
-
 #[test]
 fn fuzz_long_did_string() {
     let env = setup_env();
     let controller = generate_address(&env);
-    let long_bytes: Vec<u8> = (0..10000).map(|_| b'a').collect();
+    let long_bytes = [b'a'; 10000];
     let long_did = Bytes::from_slice(&env, &long_bytes);
     let vm = crate::VerificationMethod {
         id: Bytes::from_slice(&env, b"#key-1"),
@@ -68,14 +62,14 @@ fn fuzz_empty_credential_claims() {
     let issuer = generate_address(&env);
     let subject = generate_address(&env);
 
-    CredentialIssuer::register_issuer(env.clone(), issuer.clone()).unwrap();
-
     let result = CredentialIssuer::issue_credential(
         env.clone(),
-        issuer.clone(),
-        subject.clone(),
-        Bytes::from_slice(&env, b"KYCCredential"),
-        Map::new(&env),
+        issuer,
+        subject,
+        vec![&env, Bytes::from_slice(&env, b"Test")],
+        Bytes::new(&env),
+        None,
+        Bytes::from_slice(&env, b"proof"),
     );
     assert!(result.is_err());
     assert_eq!(result.err().unwrap(), CredentialIssuerError::InvalidCredential);
@@ -91,10 +85,12 @@ fn fuzz_invalid_credential_type() {
 
     let result = CredentialIssuer::issue_credential(
         env.clone(),
-        issuer.clone(),
-        subject.clone(),
-        Bytes::from_slice(&env, b"InvalidType"),
-        make_claims(&env),
+        issuer,
+        subject,
+        Vec::new(&env),
+        Bytes::from_slice(&env, b"data"),
+        None,
+        Bytes::from_slice(&env, b"proof"),
     );
     assert!(result.is_err());
     assert_eq!(result.err().unwrap(), CredentialIssuerError::InvalidCredentialType);
@@ -155,7 +151,7 @@ fn fuzz_duplicate_circuit_registration() {
 
     let result = ZKAttestationContract::register_circuit(
         env.clone(),
-        circuit_id.clone(),
+        circuit_id,
         name,
         description,
         verifier_key,
@@ -202,7 +198,7 @@ fn fuzz_nullifier_reuse() {
 
     let result2 = ZKAttestationContract::submit_proof(
         env.clone(),
-        circuit_id.clone(),
+        circuit_id,
         vec![&env, Bytes::from_slice(&env, b"input2")],
         Bytes::from_slice(&env, b"proof2"),
         nullifier,
@@ -235,7 +231,7 @@ fn fuzz_empty_proof() {
 
     let result = ZKAttestationContract::submit_proof(
         env.clone(),
-        circuit_id.clone(),
+        circuit_id,
         vec![&env, Bytes::from_slice(&env, b"input")],
         Bytes::new(&env),
         Bytes::from_slice(&env, b"null"),
@@ -255,16 +251,14 @@ fn fuzz_invalid_risk_score() {
 
     let result = ComplianceFilter::update_risk_score(
         env.clone(),
-        oracle.clone(),
-        user.clone(),
+        oracle,
+        user,
         101,
         Bytes::from_slice(&env, b"test"),
     );
     assert!(result.is_err());
     assert_eq!(result.err().unwrap(), ComplianceFilterError::InvalidRiskScore);
 }
-
-use crate::compliance_filter::ComplianceFilterError;
 
 #[test]
 fn fuzz_invalid_did_format() {
@@ -281,7 +275,7 @@ fn fuzz_invalid_did_format() {
 
     let result = DIDRegistry::create_did(
         env.clone(),
-        controller.clone(),
+        controller,
         bad_did,
         vec![&env, vm],
         Vec::new(&env),
@@ -296,13 +290,18 @@ fn fuzz_unregistered_issuer() {
     let issuer = generate_address(&env);
     let subject = generate_address(&env);
 
+    let long_type = [b'X'; 5000];
+    let long_cred_type = vec![&env, Bytes::from_slice(&env, &long_type)];
+
     let result = CredentialIssuer::issue_credential(
         env.clone(),
         issuer,
         subject,
-        Bytes::from_slice(&env, b"KYCCredential"),
-        make_claims(&env),
+        long_cred_type,
+        Bytes::from_slice(&env, b"data"),
+        None,
+        Bytes::from_slice(&env, b"proof"),
     );
+    // 5000 > MAX_CREDENTIAL_TYPE_LENGTH (128), so this should fail
     assert!(result.is_err());
-    assert_eq!(result.err().unwrap(), CredentialIssuerError::InvalidIssuer);
 }

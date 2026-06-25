@@ -1,4 +1,16 @@
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Bytes, Env, Symbol, symbol_short};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env, Map,
+    Symbol, Vec,
+};
+
+use crate::{clamp_page_size, PaginatedReputationHistory};
+
+const SCORE_SCALE: u32 = 10;
+const MAX_SCORE: u32 = 1000 * SCORE_SCALE;
+const BASE_SCORE: u32 = 80 * SCORE_SCALE;
+const CHECKPOINT_INTERVAL: u64 = 60 * 60 * 24;
+const MAX_HISTORY_POINTS: u32 = 120;
+const MAX_GRAPH_EDGES: u32 = 64;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -67,12 +79,114 @@ impl ReputationScore {
         let config = Self::get_config(&env);
         let mut score = Self::get_reputation_score(env.clone(), address.clone());
 
-        let reason = if success {
-            score = score.saturating_add(config.transaction_success_weight);
-            Bytes::from_array(&env, b"Transaction Success")
-        } else {
-            score = score.saturating_sub(config.transaction_failure_weight);
-            Bytes::from_array(&env, b"Transaction Failure")
+    pub fn get_reputation_history(
+        env: Env,
+        did: Address,
+        limit: u32,
+    ) -> Result<Vec<ReputationHistoryEntry>, ReputationScoreError> {
+        let history: Vec<ReputationHistoryEntry> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::History(did.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let len = history.len();
+        let start = if len > limit { len - limit } else { 0 };
+        let mut result = Vec::new(&env);
+        for index in start..len {
+            if let Some(entry) = history.get(index) {
+                result.push_back(entry);
+            }
+        }
+        Ok(result)
+    }
+
+    /// Paginated reputation history (#56).
+    pub fn get_reputation_history_paginated(
+        env: Env,
+        address: Address,
+        page: u32,
+        page_size: u32,
+    ) -> Result<PaginatedReputationHistory, ReputationScoreError> {
+        let history: Vec<ReputationHistoryEntry> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::History(address))
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let size = clamp_page_size(page_size);
+        let total = history.len() as u32;
+        let start = page * size;
+        let mut data = Vec::new(&env);
+
+        if start < total {
+            let end = core::cmp::min(start + size, total);
+            for i in start..end {
+                if let Some(entry) = history.get(i) {
+                    data.push_back(entry);
+                }
+            }
+        }
+
+        Ok(PaginatedReputationHistory {
+            data,
+            page,
+            total,
+            has_more: (start + size) < total,
+        })
+    }
+
+    pub fn get_reputation_percentile(env: Env, did: Address) -> Result<u32, ReputationScoreError> {
+        let target = Self::load_profile(&env, &did)?.score;
+        let population = Self::population(&env);
+        if population.is_empty() {
+            return Ok(0);
+        }
+
+        let mut below_or_equal = 0u32;
+        for subject in population.iter() {
+            if let Ok(candidate) = Self::load_profile(&env, &subject) {
+                if candidate.score <= target {
+                    below_or_equal += 1;
+                }
+            }
+        }
+
+        Ok((below_or_equal * 100) / population.len())
+    }
+
+    pub fn meets_reputation_threshold(
+        env: Env,
+        did: Address,
+        threshold: u32,
+    ) -> Result<bool, ReputationScoreError> {
+        Ok(Self::load_profile(&env, &did)?.score >= threshold * SCORE_SCALE)
+    }
+
+    const MAX_REASON_LENGTH: u32 = 1024;
+
+    pub fn attest_trust(
+        env: Env,
+        truster: Address,
+        subject: Address,
+        weight: u32,
+        reason: Bytes,
+    ) -> Result<TrustAttestation, ReputationScoreError> {
+        truster.require_auth();
+        if weight > 1000 {
+            return Err(ReputationScoreError::InvalidScore);
+        }
+        if reason.len() > Self::MAX_REASON_LENGTH {
+            return Err(ReputationScoreError::InvalidScore);
+        }
+
+        let timestamp = env.ledger().timestamp();
+        let edge = TrustAttestation {
+            truster: truster.clone(),
+            subject: subject.clone(),
+            weight,
+            reason,
+            timestamp,
         };
 
         if score > config.max_score {

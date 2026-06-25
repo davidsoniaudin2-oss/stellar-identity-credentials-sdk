@@ -1,0 +1,190 @@
+name: Deploy to Stellar Testnet
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry-run mode (build only, no deploy)"
+        required: false
+        default: "false"
+        type: boolean
+
+env:
+  SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org"
+  SOROBAN_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build WASM Binaries
+    runs-on: ubuntu-latest
+    outputs:
+      contracts: ${{ steps.list.outputs.contracts }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install Soroban CLI
+        run: cargo install --locked soroban-cli
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build all contracts
+        run: |
+          soroban contract build
+          ls -lh target/wasm32-unknown-unknown/release/*.wasm
+
+      - name: Optimize WASM binaries
+        run: |
+          for wasm in target/wasm32-unknown-unknown/release/*.wasm; do
+            soroban contract optimize --wasm "$wasm"
+          done
+
+      - name: List built contracts
+        id: list
+        run: |
+          contracts=$(ls target/wasm32-unknown-unknown/release/*.optimized.wasm 2>/dev/null | \
+            xargs -I{} basename {} .optimized.wasm | tr '\n' ',' | sed 's/,$//')
+          echo "contracts=$contracts" >> "$GITHUB_OUTPUT"
+          echo "Built contracts: $contracts"
+
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-binaries
+          path: target/wasm32-unknown-unknown/release/*.optimized.wasm
+          retention-days: 30
+
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run tests
+        run: cargo test --release -- --nocapture 2>&1 | tee test-output.txt
+
+      - name: Extract benchmark results
+        run: grep '^\[BENCH\]' test-output.txt || echo "No benchmark output found"
+
+  deploy:
+    name: Deploy to Testnet
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.dry_run != 'true' }}
+    environment: testnet
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Soroban CLI
+        run: cargo install --locked soroban-cli
+
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-binaries
+          path: wasm/
+
+      - name: Configure Soroban identity
+        run: |
+          soroban keys add deployer --secret-key "${{ secrets.TESTNET_SECRET_KEY }}"
+
+      - name: Deploy contracts
+        id: deploy
+        run: |
+          declare -A addresses
+          for wasm in wasm/*.optimized.wasm; do
+            name=$(basename "$wasm" .optimized.wasm)
+            echo "Deploying $name..."
+            addr=$(soroban contract deploy \
+              --wasm "$wasm" \
+              --source deployer \
+              --rpc-url "$SOROBAN_RPC_URL" \
+              --network-passphrase "$SOROBAN_NETWORK_PASSPHRASE")
+            echo "$name=$addr" >> "$GITHUB_OUTPUT"
+            addresses[$name]=$addr
+            echo "  -> $addr"
+          done
+
+          # Write addresses to a JSON file for SDK config
+          echo "{" > deployed-addresses.json
+          first=true
+          for name in "${!addresses[@]}"; do
+            if [ "$first" = true ]; then first=false; else echo "," >> deployed-addresses.json; fi
+            echo "  \"$name\": \"${addresses[$name]}\"" >> deployed-addresses.json
+          done
+          echo "}" >> deployed-addresses.json
+
+          cat deployed-addresses.json
+
+      - name: Compute WASM hashes
+        id: hashes
+        run: |
+          echo "## Deployed Contract Hashes" > deploy-summary.md
+          echo "" >> deploy-summary.md
+          echo "| Contract | Address | WASM SHA-256 |" >> deploy-summary.md
+          echo "|----------|---------|--------------|" >> deploy-summary.md
+          for wasm in wasm/*.optimized.wasm; do
+            name=$(basename "$wasm" .optimized.wasm)
+            hash=$(sha256sum "$wasm" | cut -d' ' -f1)
+            addr=$(grep "^$name=" "$GITHUB_OUTPUT" 2>/dev/null | cut -d= -f2 || echo "N/A")
+            echo "| $name | $addr | $hash |" >> deploy-summary.md
+          done
+          cat deploy-summary.md
+
+      - name: Upload deployment artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: testnet-deployment
+          path: |
+            deployed-addresses.json
+            deploy-summary.md
+          retention-days: 90
+
+      - name: Update SDK config
+        run: |
+          if [ -f sdk/src/config.ts ]; then
+            echo "Updating SDK contract addresses..."
+            cp deployed-addresses.json sdk/src/deployed-addresses.json
+          fi
+
+      - name: Notify via webhook
+        if: always()
+        run: |
+          if [ -n "${{ secrets.NOTIFICATION_WEBHOOK_URL }}" ]; then
+            status="${{ job.status }}"
+            curl -s -X POST "${{ secrets.NOTIFICATION_WEBHOOK_URL }}" \
+              -H "Content-Type: application/json" \
+              -d "{\"text\":\"Testnet deployment $status for ${{ github.repository }} (commit ${{ github.sha }})\"}" || true
+          fi
