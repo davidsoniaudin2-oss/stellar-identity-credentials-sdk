@@ -95,9 +95,17 @@ fn key_entries(env: &Env, source: &Bytes) -> Bytes {
     k
 }
 
+fn addr_to_bytes(env: &Env, addr: &Address) -> Bytes {
+    let s = addr.to_string();
+    let len = s.len() as usize;
+    let mut buf = alloc::vec![0u8; len];
+    s.copy_into_slice(&mut buf);
+    Bytes::from_slice(env, &buf)
+}
+
 fn key_screening(env: &Env, addr: &Address) -> Bytes {
     let mut k = Bytes::from_slice(env, b"screen:");
-    k.append(&Bytes::from_slice(env, addr.to_string().as_bytes()));
+    k.append(&addr_to_bytes(env, addr));
     k
 }
 
@@ -109,15 +117,16 @@ fn key_rule(env: &Env, jurisdiction: &Bytes) -> Bytes {
 
 fn key_audit(env: &Env, addr: &Address, ts: u64) -> Bytes {
     let mut k = Bytes::from_slice(env, b"audit:");
-    k.append(&Bytes::from_slice(env, addr.to_string().as_bytes()));
+    k.append(&addr_to_bytes(env, addr));
     k.append(&Bytes::from_slice(env, b":"));
-    k.append(&Bytes::from_slice(env, ts.to_string().as_bytes()));
+    let ts_str = alloc::format!("{}", ts);
+    k.append(&Bytes::from_slice(env, ts_str.as_bytes()));
     k
 }
 
 fn key_audit_index(env: &Env, addr: &Address) -> Bytes {
     let mut k = Bytes::from_slice(env, b"aidx:");
-    k.append(&Bytes::from_slice(env, addr.to_string().as_bytes()));
+    k.append(&addr_to_bytes(env, addr));
     k
 }
 
@@ -512,11 +521,12 @@ impl ComplianceFilter {
             }
             addr_bytes.push_back(b);
         }
-        // Parse as Stellar strkey — use Address::from_string equivalent
-        let addr_str = core::str::from_utf8(
-            &addr_bytes.to_array::<56>().unwrap_or([0u8; 56])
-        ).unwrap_or("");
-        // Soroban Address can be constructed from a string via the env
+        let len = addr_bytes.len() as usize;
+        let mut buf = alloc::vec![0u8; len];
+        for i in 0..len {
+            buf[i] = addr_bytes.get(i as u32).unwrap_or(0);
+        }
+        let addr_str = core::str::from_utf8(&buf).unwrap_or("");
         Ok(Address::from_str(env, addr_str))
     }
 }

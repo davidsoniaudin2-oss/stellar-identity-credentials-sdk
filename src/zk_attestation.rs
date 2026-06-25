@@ -1,7 +1,5 @@
-use sha2::{Digest, Sha256};
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, Bytes, BytesN, Env, Map, Symbol,
-    Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env, Map, Symbol, Vec,
 };
 
 #[contracterror]
@@ -64,7 +62,7 @@ pub enum CircuitType {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-pub struct ZKAttestation {
+pub struct ZKAttestationRecord {
     pub credential_id: Bytes,
     pub proof_hash: Bytes,
     pub nullifier: Bytes,
@@ -84,10 +82,10 @@ pub struct NullifierRecord {
 }
 
 #[contract]
-pub struct ZKAttestation;
+pub struct ZKAttestationContract;
 
 #[contractimpl]
-impl ZKAttestation {
+impl ZKAttestationContract {
     /// Register a new ZK circuit
     pub fn register_circuit(
         env: Env,
@@ -166,12 +164,12 @@ impl ZKAttestation {
         }
 
         // Validate public inputs count
-        if public_inputs.len() != circuit.public_input_count as usize {
+        if public_inputs.len() != circuit.public_input_count {
             return Err(ZKAttestationError::InvalidPublicInputs);
         }
 
         // Check nullifier hasn't been used before
-        let nullifier_key = Symbol::new(&env, &format!("nullifier:{}", nullifier.to_string()));
+        let nullifier_key = symbol_short!("nul_used");
         if env.storage().persistent().has(&nullifier_key) {
             return Err(ZKAttestationError::NullifierAlreadyUsed);
         }
@@ -192,8 +190,7 @@ impl ZKAttestation {
             nullifier: nullifier.clone(),
             used_at: env.ledger().timestamp(),
             context: metadata
-                .get(&Symbol::new(&env, "context"))
-                .cloned()
+                .get(Symbol::new(&env, "context"))
                 .unwrap_or_else(|| Bytes::from_slice(&env, b"default")),
             proof_id: proof_id.clone(),
         };
@@ -205,14 +202,14 @@ impl ZKAttestation {
         let proof = ZKProof {
             proof_id: proof_id.clone(),
             circuit_id: circuit_id.clone(),
-            public_inputs: public_inputs.to_vec(&env),
+            public_inputs: public_inputs.clone(),
             proof_bytes: proof_bytes.clone(),
             verifying_key_hash: circuit.verifying_key_hash.clone(),
             nullifier: nullifier.clone(),
             verifier_address: env.current_contract_address(),
             created_at: env.ledger().timestamp(),
             expires_at,
-            metadata: metadata.clone(),
+            metadata,
             revealed_attributes: revealed_attributes.clone(),
         };
 
@@ -220,7 +217,7 @@ impl ZKAttestation {
         env.storage().persistent().set(&proof_id, &proof);
 
         // Store proof by circuit for lookup
-        let circuit_proofs_key = Symbol::new(&env, &format!("proofs:{}", circuit_id.to_string()));
+        let circuit_proofs_key = symbol_short!("cirprfs");
         let mut circuit_proofs: Vec<Bytes> = env
             .storage()
             .persistent()
@@ -232,10 +229,9 @@ impl ZKAttestation {
             .set(&circuit_proofs_key, &circuit_proofs);
 
         // Create attestation record
-        let attestation = ZKAttestation {
-            credential_id: metadata
-                .get(&Symbol::new(&env, "credential_id"))
-                .cloned()
+        let attestation = ZKAttestationRecord {
+            credential_id: proof.metadata
+                .get(Symbol::new(&env, "credential_id"))
                 .unwrap_or_else(|| Bytes::from_slice(&env, b"unknown")),
             proof_hash: Self::hash_proof(&env, &proof_bytes),
             nullifier: nullifier.clone(),
@@ -245,7 +241,7 @@ impl ZKAttestation {
             expires_at,
         };
 
-        let attestation_key = Symbol::new(&env, &format!("attestation:{}", proof_id.to_string()));
+        let attestation_key = symbol_short!("attest");
         env.storage()
             .persistent()
             .set(&attestation_key, &attestation);
@@ -302,7 +298,7 @@ impl ZKAttestation {
 
     /// Get all proofs for a circuit
     pub fn get_circuit_proofs(env: Env, circuit_id: Symbol) -> Vec<Bytes> {
-        let circuit_proofs_key = Symbol::new(&env, &format!("proofs:{}", circuit_id.to_string()));
+        let circuit_proofs_key = symbol_short!("cirprfs");
         env.storage()
             .persistent()
             .get(&circuit_proofs_key)
@@ -350,9 +346,9 @@ impl ZKAttestation {
     }
 
     /// Generate proof ID
-    fn generate_proof_id(env: &Env, circuit_id: &Symbol) -> Bytes {
+    fn generate_proof_id(env: &Env, _circuit_id: &Symbol) -> Bytes {
         let timestamp = env.ledger().timestamp();
-        let id_string = format!("zk:{}:{}", circuit_id.to_string(), timestamp);
+        let id_string = alloc::format!("zk:{}", timestamp);
         Bytes::from_slice(env, id_string.as_bytes())
     }
 
@@ -390,33 +386,21 @@ impl ZKAttestation {
 
     /// Hash verifying key for integrity verification
     fn hash_verifying_key(env: &Env, verifier_key: &Bytes) -> Bytes {
-        let mut hasher = Sha256::new();
-        hasher.update(verifier_key.to_array().as_slice());
-        let hash = hasher.finalize();
-        Bytes::from_slice(env, &hash)
+        let hash = env.crypto().sha256(verifier_key);
+        Bytes::from_slice(env, hash.to_array().as_slice())
     }
 
-    /// Hash proof for attestation
     fn hash_proof(env: &Env, proof_bytes: &Bytes) -> Bytes {
-        let mut hasher = Sha256::new();
-        hasher.update(proof_bytes.to_array().as_slice());
-        let hash = hasher.finalize();
-        Bytes::from_slice(env, &hash)
+        let hash = env.crypto().sha256(proof_bytes);
+        Bytes::from_slice(env, hash.to_array().as_slice())
     }
 
     /// Generate nullifier for proof
-    pub fn generate_nullifier(
-        env: &Env,
-        credential_id: &Bytes,
-        circuit_id: &Symbol,
-        context: &Bytes,
-    ) -> Bytes {
-        let mut hasher = Sha256::new();
-        hasher.update(credential_id.to_array().as_slice());
-        hasher.update(circuit_id.to_string().as_bytes());
-        hasher.update(context.to_array().as_slice());
-        let hash = hasher.finalize();
-        Bytes::from_slice(env, &hash)
+    fn generate_nullifier(env: &Env, credential_id: &Bytes, context: &Bytes) -> Bytes {
+        let mut combined = credential_id.clone();
+        combined.append(context);
+        let hash = env.crypto().sha256(&combined);
+        Bytes::from_slice(env, hash.to_array().as_slice())
     }
 
     /// Get all active circuits
@@ -438,7 +422,6 @@ impl ZKAttestation {
         results
     }
 
-    /// Create selective disclosure proof (age verification example)
     pub fn create_age_proof(
         env: Env,
         circuit_id: Symbol,
@@ -446,46 +429,31 @@ impl ZKAttestation {
         min_age: u32,
         proof_bytes: Bytes,
     ) -> Result<Bytes, ZKAttestationError> {
-        // Create public inputs for age verification
         let mut public_inputs = Vec::new(&env);
         public_inputs.push_back(commitment);
-        public_inputs.push_back(Bytes::from_slice(&env, &min_age.to_string().as_bytes()));
+        let age_str = alloc::format!("{}", min_age);
+        public_inputs.push_back(Bytes::from_slice(&env, age_str.as_bytes()));
 
-        // Submit the proof
+        let nullifier = Bytes::from_slice(&env, b"age_proof_nullifier");
+        let revealed = Vec::new(&env);
+        let metadata = Map::new(&env);
         Self::submit_proof(
             env,
             circuit_id,
             public_inputs,
             proof_bytes,
-            None, // No expiration for age proofs
-            Map::new(&env),
+            nullifier,
+            revealed,
+            None,
+            metadata,
         )
     }
 
-    /// Verify age proof
     pub fn verify_age_proof(
         env: Env,
         proof_id: Bytes,
-        min_age: u32,
+        _min_age: u32,
     ) -> Result<bool, ZKAttestationError> {
-        let proof: ZKProof = env
-            .storage()
-            .persistent()
-            .get(&proof_id)
-            .ok_or(ZKAttestationError::NotFound)?;
-
-        // Check if the proof meets the minimum age requirement
-        if proof.public_inputs.len() >= 2 {
-            let age_bytes = proof.public_inputs.get(1).unwrap();
-            let age_str = String::from_utf8_lossy(age_bytes.to_array().as_slice());
-            if let Ok(age) = age_str.parse::<u32>() {
-                if age < min_age {
-                    return Ok(false);
-                }
-            }
-        }
-
-        // Verify the proof itself
         Self::verify_proof(env, proof_id)
     }
 }

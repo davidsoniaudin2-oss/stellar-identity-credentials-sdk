@@ -1,16 +1,17 @@
+extern crate alloc;
+
 pub mod did_registry;
 pub mod credential_issuer;
 pub mod reputation_score;
 pub mod zk_attestation;
 pub mod compliance_filter;
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Symbol, Vec};
-use core::fmt::Write;
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Map, Symbol, Vec};
 
 pub use did_registry::DIDRegistry;
 pub use credential_issuer::CredentialIssuer;
 pub use reputation_score::ReputationScore;
-pub use zk_attestation::ZKAttestation;
+pub use zk_attestation::ZKAttestationContract;
 pub use compliance_filter::ComplianceFilter;
 
 #[contracttype]
@@ -49,14 +50,19 @@ pub struct VerifiableCredential {
     pub id: Bytes,
     pub issuer: Address,
     pub subject: Address,
-    pub type_: Vec<Bytes>,
-    pub claims: Bytes,
+    pub credential_type: Bytes,
+    pub claims: Map<Bytes, Bytes>,
     pub issuance_date: u64,
     pub expiration_date: Option<u64>,
-    pub parent_credential: Option<Bytes>,
-    pub schema_id: Option<Bytes>,
-    pub revocation: Option<Bytes>,
-    pub proof: Option<Bytes>,
+    pub revoked: bool,
+    pub revocation_reason: Option<Bytes>,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct CredentialVerification {
+    pub valid: bool,
+    pub reason: Option<Bytes>,
 }
 
 #[contract]
