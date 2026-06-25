@@ -1,5 +1,7 @@
 # Stellar Identity and Verifiable Credentials SDK
 
+[![CI](https://github.com/Kevin737866/stellar-identity-credentials-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/Kevin737866/stellar-identity-credentials-sdk/actions/workflows/ci.yml)
+
 A comprehensive SDK for building decentralized identity and verifiable credentials solutions on the Stellar network using Soroban smart contracts.
 
 ## 🌟 Features

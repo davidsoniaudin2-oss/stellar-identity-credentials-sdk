@@ -449,3 +449,161 @@ fn test_deterministic_parallel_safe() {
     assert!(alice_after > bob_after);
     assert_eq!(bob_after, bob_score);
 }
+
+// =========================================================================
+// Issuer Authorization Registry Tests
+// =========================================================================
+
+#[test]
+fn test_authorize_and_check_issuer() {
+    let env = setup_env();
+    let admin = new_address(&env);
+    let issuer = new_address(&env);
+
+    CredentialIssuer::set_admin(env.clone(), admin.clone()).unwrap();
+
+    let kyc_type = Bytes::from_slice(&env, b"KYCVerification");
+    let edu_type = Bytes::from_slice(&env, b"EducationCredential");
+    let types = vec![&env, kyc_type.clone(), edu_type.clone()];
+
+    CredentialIssuer::authorize_issuer(env.clone(), admin.clone(), issuer.clone(), types).unwrap();
+
+    assert!(CredentialIssuer::is_authorized_issuer(env.clone(), issuer.clone(), kyc_type.clone()));
+    assert!(CredentialIssuer::is_authorized_issuer(env.clone(), issuer.clone(), edu_type.clone()));
+
+    let unknown_type = Bytes::from_slice(&env, b"UnknownType");
+    assert!(!CredentialIssuer::is_authorized_issuer(env.clone(), issuer.clone(), unknown_type));
+}
+
+#[test]
+fn test_get_authorized_types() {
+    let env = setup_env();
+    let admin = new_address(&env);
+    let issuer = new_address(&env);
+
+    CredentialIssuer::set_admin(env.clone(), admin.clone()).unwrap();
+
+    let kyc_type = Bytes::from_slice(&env, b"KYCVerification");
+    let types = vec![&env, kyc_type.clone()];
+
+    CredentialIssuer::authorize_issuer(env.clone(), admin.clone(), issuer.clone(), types).unwrap();
+
+    let authorized = CredentialIssuer::get_authorized_types(env.clone(), issuer.clone());
+    assert_eq!(authorized.len(), 1);
+    assert_eq!(authorized.get(0).unwrap(), kyc_type);
+}
+
+#[test]
+fn test_deauthorize_issuer() {
+    let env = setup_env();
+    let admin = new_address(&env);
+    let issuer = new_address(&env);
+
+    CredentialIssuer::set_admin(env.clone(), admin.clone()).unwrap();
+
+    let kyc_type = Bytes::from_slice(&env, b"KYCVerification");
+    let types = vec![&env, kyc_type.clone()];
+
+    CredentialIssuer::authorize_issuer(env.clone(), admin.clone(), issuer.clone(), types).unwrap();
+    assert!(CredentialIssuer::is_authorized_issuer(env.clone(), issuer.clone(), kyc_type.clone()));
+
+    CredentialIssuer::deauthorize_issuer(env.clone(), admin.clone(), issuer.clone()).unwrap();
+    assert!(!CredentialIssuer::is_authorized_issuer(env.clone(), issuer.clone(), kyc_type));
+
+    let authorized = CredentialIssuer::get_authorized_types(env.clone(), issuer.clone());
+    assert_eq!(authorized.len(), 0);
+}
+
+#[test]
+fn test_deauthorize_nonexistent_issuer_fails() {
+    let env = setup_env();
+    let admin = new_address(&env);
+    let issuer = new_address(&env);
+
+    CredentialIssuer::set_admin(env.clone(), admin.clone()).unwrap();
+
+    let result = CredentialIssuer::deauthorize_issuer(env.clone(), admin.clone(), issuer.clone());
+    assert_eq!(
+        result.unwrap_err(),
+        crate::credential_issuer::CredentialIssuerError::IssuerNotAuthorized
+    );
+}
+
+#[test]
+fn test_authorize_issuer_non_admin_fails() {
+    let env = setup_env();
+    let admin = new_address(&env);
+    let non_admin = new_address(&env);
+    let issuer = new_address(&env);
+
+    CredentialIssuer::set_admin(env.clone(), admin.clone()).unwrap();
+
+    let types = vec![&env, Bytes::from_slice(&env, b"KYCVerification")];
+    let result = CredentialIssuer::authorize_issuer(env.clone(), non_admin, issuer, types);
+    assert_eq!(
+        result.unwrap_err(),
+        crate::credential_issuer::CredentialIssuerError::Unauthorized
+    );
+}
+
+#[test]
+fn test_issue_credential_requires_authorization() {
+    let env = setup_env();
+    let admin = new_address(&env);
+    let issuer = new_address(&env);
+    let subject = new_address(&env);
+
+    CredentialIssuer::set_admin(env.clone(), admin.clone()).unwrap();
+
+    let credential_type = make_credential_type(&env, "KYCVerification");
+    let credential_data = Bytes::from_slice(&env, b"{\"name\":\"Alice\"}");
+    let proof = Bytes::from_slice(&env, b"valid_signature");
+
+    let result = CredentialIssuer::issue_credential(
+        env.clone(),
+        issuer.clone(),
+        subject.clone(),
+        credential_type.clone(),
+        credential_data.clone(),
+        None,
+        proof.clone(),
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        crate::credential_issuer::CredentialIssuerError::IssuerNotAuthorized
+    );
+
+    let kyc_type = Bytes::from_slice(&env, b"KYCVerification");
+    CredentialIssuer::authorize_issuer(
+        env.clone(),
+        admin.clone(),
+        issuer.clone(),
+        vec![&env, kyc_type],
+    )
+    .unwrap();
+
+    let result = CredentialIssuer::issue_credential(
+        env.clone(),
+        issuer,
+        subject,
+        credential_type,
+        credential_data,
+        None,
+        proof,
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_set_admin_only_once() {
+    let env = setup_env();
+    let admin = new_address(&env);
+    let other = new_address(&env);
+
+    CredentialIssuer::set_admin(env.clone(), admin.clone()).unwrap();
+    let result = CredentialIssuer::set_admin(env.clone(), other);
+    assert_eq!(
+        result.unwrap_err(),
+        crate::credential_issuer::CredentialIssuerError::Unauthorized
+    );
+}

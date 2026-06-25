@@ -18,18 +18,25 @@ import {
 } from './types';
 import { StellarIdentityError, ConfigurationError, ErrorCode, mapContractError } from './errors';
 import { DIDClient } from './didClient';
+import { Logger } from './logger';
+import { DataMinimizationEngine, MinimalDisclosurePolicy } from './dataMinimization';
 
 export class CredentialClient {
   private rpc: SorobanRpc.Server;
   private config: StellarIdentityConfig;
   private credentialIssuerContract: Contract;
   private didClient: DIDClient;
+  private logger: Logger;
+  private dataMinimizationEngine: DataMinimizationEngine;
 
   constructor(config: StellarIdentityConfig) {
     this.config = config;
     this.rpc = new SorobanRpc.Server(config.rpcUrl || this.getDefaultRpcUrl());
     this.credentialIssuerContract = new Contract(config.contracts.credentialIssuer);
     this.didClient = new DIDClient(config);
+    this.logger = new Logger('CredentialClient');
+    this.dataMinimizationEngine = new DataMinimizationEngine();
+    this.logger.debug('CredentialClient initialized', { rpcUrl: config.rpcUrl });
   }
 
   private validateInput(condition: boolean, message: string): void {
@@ -43,6 +50,7 @@ export class CredentialClient {
     options: IssueCredentialOptions,
     txOptions?: TransactionOptions
   ): Promise<string> {
+    this.logger.debug('issueCredential called', { subject: options.subject, credentialType: options.credentialType });
     try {
       const address = issuerKeypair.publicKey();
       this.validateInput(address.length > 0, 'Keypair public key must not be empty');
@@ -73,6 +81,8 @@ export class CredentialClient {
 
       const prepared = await this.rpc.prepareTransaction(tx);
       prepared.sign(issuerKeypair);
+      
+      this.logger.trace('Sending issue_credential transaction');
       const result = await this.rpc.sendTransaction(prepared);
 
       if (result.status === 'ERROR') throw new Error(`Transaction failed: ${result.errorResult}`);
@@ -83,6 +93,7 @@ export class CredentialClient {
   }
 
   async verifyCredential(credentialId: string): Promise<CredentialVerificationResult> {
+    this.logger.debug('verifyCredential called', { credentialId });
     try {
       const credential = await this.getCredential(credentialId);
       const isValidVal = await this.simulateRead('verify_credential', [
@@ -139,6 +150,7 @@ export class CredentialClient {
   }
 
   async getCredential(credentialId: string): Promise<VerifiableCredential> {
+    this.logger.trace('getCredential called', { credentialId });
     try {
       const retval = await this.simulateRead('get_credential', [
         nativeToScVal(new TextEncoder().encode(credentialId), { type: 'bytes' }),
@@ -204,13 +216,20 @@ export class CredentialClient {
     credentials: VerifiableCredential[],
     holderKeypair: Keypair,
     domain?: string,
-    challenge?: string
+    challenge?: string,
+    policy?: MinimalDisclosurePolicy
   ): Promise<Record<string, unknown>> {
+    
+    let processedCredentials = credentials;
+    if (policy) {
+      processedCredentials = credentials.map(c => this.dataMinimizationEngine.applyDisclosurePolicy(c, policy));
+    }
+
     return {
       '@context': ['https://www.w3.org/2018/credentials/v1'],
       type: ['VerifiablePresentation'],
       holder: this.didClient.generateDID(holderKeypair.publicKey()),
-      verifiableCredential: credentials,
+      verifiableCredential: processedCredentials,
       proof: await this.createPresentationProof(holderKeypair, domain, challenge),
     };
   }
@@ -311,6 +330,9 @@ export class CredentialClient {
       .build();
 
     const sim = await this.rpc.simulateTransaction(tx);
+    
+    this.logger.trace('simulateRead executed', { method });
+    
     if (SorobanRpc.Api.isSimulationError(sim)) {
       throw new Error((sim as SorobanRpc.Api.SimulateTransactionErrorResponse).error);
     }
@@ -395,6 +417,7 @@ export class CredentialClient {
   }
 
   private handleError(error: unknown): StellarIdentityError {
+    this.logger.error('CredentialClient error occurred', error);
     return mapContractError(error);
   }
 }

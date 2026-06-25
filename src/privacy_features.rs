@@ -1,5 +1,5 @@
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, Bytes, Env, Map, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, log, Address, Bytes, Env, Map, Symbol, Vec,
 };
 use sha2::{Digest, Sha256};
 
@@ -87,6 +87,7 @@ impl PrivacyFeatures {
             zero_knowledge_verification,
         };
 
+        log!(&env, "TRACE: initialize_privacy_config - Configured privacy settings");
         env.storage()
             .persistent()
             .set(&Symbol::new(&env, "privacy_config"), &config);
@@ -125,9 +126,11 @@ impl PrivacyFeatures {
         // Check if nullifier already exists (prevent double-spending)
         let nullifier_key = Symbol::new(&env, &format!("nullifier:{}", nullifier.to_string()));
         if env.storage().persistent().has(&nullifier_key) {
+            log!(&env, "ERROR: generate_nullifier - Double spending attempt detected");
             return Err(PrivacyError::DoubleSpending);
         }
 
+        log!(&env, "TRACE: generate_nullifier - Nullifier successfully generated and checked");
         // Store nullifier state
         let nullifier_state = NullifierState {
             nullifier: nullifier.clone(),
@@ -162,11 +165,13 @@ impl PrivacyFeatures {
 
         // Check context matches
         if nullifier_state.context != context {
+            log!(&env, "ERROR: verify_nullifier - Context mismatch");
             return Err(PrivacyError::ContextMismatch);
         }
 
         // Check expiration
         if env.ledger().timestamp() > nullifier_state.expires_at {
+            log!(&env, "ERROR: verify_nullifier - Nullifier expired");
             return Err(PrivacyError::InvalidNullifier);
         }
 

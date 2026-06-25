@@ -1,4 +1,13 @@
+export enum CircuitType {
+  RangeProof = 'RangeProof',
+  SetMembership = 'SetMembership',
+  CredentialOwnership = 'CredentialOwnership',
+  CompositeProof = 'CompositeProof',
+  EqualityProof = 'EqualityProof',
+}
+
 export interface DIDDocument {
+
   id: string;
   controller: string;
   verificationMethod: VerificationMethod[];
@@ -142,14 +151,6 @@ export interface ZKCircuit {
   supportedAttributes: string[];
 }
 
-export enum CircuitType {
-  RangeProof = 'RangeProof',
-  SetMembership = 'SetMembership',
-  CredentialOwnership = 'CredentialOwnership',
-  CompositeProof = 'CompositeProof',
-  EqualityProof = 'EqualityProof',
-}
-
 export interface ZKAttestation {
   credentialId: string;
   proofHash: string;
@@ -197,6 +198,7 @@ export interface StellarIdentityConfig {
   };
   rpcUrl?: string;
   horizonUrl?: string;
+  keypair?: any; // Use any for now to avoid importing Keypair if not needed here
 }
 
 export interface CreateDIDOptions {

@@ -275,7 +275,8 @@ export class ZKProofsClient {
           publicInputs: [credential.hash],
           proofBytes,
           nullifier,
-          revealedAttributes: requiredChecks.map(check => Symbol.for(check)),
+           revealedAttributes: requiredChecks.map(check => check),
+
           expiresAt: options?.expiresAt,
           metadata: {
             type: 'kyc_verification',
@@ -381,14 +382,15 @@ export class ZKProofsClient {
           ...result,
           generationTime: Date.now() - startTime,
         });
-      } catch (error) {
-        results.push({
-          proof: null,
-          publicSignals: null,
-          generationTime: Date.now() - startTime,
-          error: error.message,
-        });
-      }
+       } catch (error: any) {
+         results.push({
+           proof: null,
+           publicSignals: null,
+           generationTime: Date.now() - startTime,
+           error: error.message,
+         });
+       }
+
     }
     
     return results;
@@ -407,9 +409,10 @@ export class ZKProofsClient {
       const wasm = await WebAssembly.compile(wasmBuffer);
       this.wasmCache.set(wasmPath, wasm);
       return wasm;
-    } catch (error) {
-      throw new Error(`Failed to load WASM from ${wasmPath}: ${error.message}`);
-    }
+     } catch (error: any) {
+       throw new Error(`Failed to load WASM from ${wasmPath}: ${error.message}`);
+     }
+
   }
 
   /**
@@ -425,9 +428,10 @@ export class ZKProofsClient {
       const zkey = JSON.parse(zkeyBuffer.toString());
       this.zkeyCache.set(zkeyPath, zkey);
       return zkey;
-    } catch (error) {
-      throw new Error(`Failed to load zkey from ${zkeyPath}: ${error.message}`);
-    }
+     } catch (error: any) {
+       throw new Error(`Failed to load zkey from ${zkeyPath}: ${error.message}`);
+     }
+
   }
 
   /**
@@ -652,7 +656,7 @@ export class ZKProofsClient {
     return Promise.all(proofIds.map(id => this.verifyProof(id)));
   }
 
-  async createAgeProof(
+  async submitAgeProof(
     submitterKeypair: Keypair,
     circuitId: string,
     commitment: string,
@@ -666,11 +670,14 @@ export class ZKProofsClient {
         circuitId,
         publicInputs: [commitment, String(minAge)],
         proofBytes,
+        nullifier: this.generateNullifier(`age_${minAge}`, circuitId, 'manual'),
+        revealedAttributes: ['age_commitment'],
         metadata: { type: 'age_verification', minAge: String(minAge) },
       },
       txOptions
     );
   }
+
 
   async verifyAgeProof(proofId: string, minAge: number): Promise<boolean> {
     try {
@@ -684,7 +691,7 @@ export class ZKProofsClient {
     }
   }
 
-  async createIncomeProof(
+  async submitIncomeProof(
     submitterKeypair: Keypair,
     circuitId: string,
     commitment: string,
@@ -698,13 +705,17 @@ export class ZKProofsClient {
         circuitId,
         publicInputs: [commitment, String(minIncome)],
         proofBytes,
-        metadata: { type: 'income_verification' },
+        nullifier: this.generateNullifier(`income_${minIncome}`, circuitId, 'manual'),
+        revealedAttributes: ['income_commitment'],
+        metadata: { type: 'income_verification', minIncome: String(minIncome) },
       },
       txOptions
     );
   }
 
-  async createCredentialOwnershipProof(
+
+
+  async submitCredentialOwnershipProof(
     submitterKeypair: Keypair,
     circuitId: string,
     credentialHash: string,
@@ -717,13 +728,15 @@ export class ZKProofsClient {
         circuitId,
         publicInputs: [credentialHash],
         proofBytes,
+        nullifier: this.generateNullifier(credentialHash, circuitId, 'manual'),
+        revealedAttributes: ['credential_ownership'],
         metadata: { type: 'credential_ownership' },
       },
       txOptions
     );
   }
 
-  async createRangeProof(
+  async submitRangeProof(
     submitterKeypair: Keypair,
     circuitId: string,
     commitment: string,
@@ -738,6 +751,8 @@ export class ZKProofsClient {
         circuitId,
         publicInputs: [commitment, String(minValue), String(maxValue)],
         proofBytes,
+        nullifier: this.generateNullifier(`range_${minValue}_${maxValue}`, circuitId, 'manual'),
+        revealedAttributes: ['range_verification'],
         metadata: { type: 'range_verification', min: String(minValue), max: String(maxValue) },
       },
       txOptions
@@ -780,12 +795,15 @@ export class ZKProofsClient {
     return {
       proofId: toStr(r[0]),
       circuitId: toStr(r[1]),
-      publicInputs: Array.isArray(r[2]) ? r[2].map(toStr) : [],
+      publicInputs: Array.isArray(r[2]) ? (r[2] as unknown[]).map(toStr) : [],
       proofBytes: toStr(r[3]),
-      verifierAddress: toStr(r[4]),
-      createdAt: Number(r[5] ?? 0),
-      expiresAt: r[6] != null ? Number(r[6]) : undefined,
-      metadata: this.parseMetadata(r[7]),
+      verifyingKeyHash: toStr(r[4]),
+      nullifier: toStr(r[5]),
+      verifierAddress: toStr(r[6]),
+      createdAt: Number(r[7] ?? 0),
+      expiresAt: r[8] != null ? Number(r[8]) : undefined,
+      metadata: this.parseMetadata(r[9]),
+      revealedAttributes: Array.isArray(r[10]) ? (r[10] as unknown[]).map(toStr) : [],
     };
   }
 
@@ -797,11 +815,14 @@ export class ZKProofsClient {
       name: toStr(r[1]),
       description: toStr(r[2]),
       verifierKey: toStr(r[3]),
-      publicInputCount: Number(r[4] ?? 0),
-      privateInputCount: Number(r[5] ?? 0),
-      createdBy: toStr(r[6]),
-      createdAt: Number(r[7] ?? 0),
-      active: Boolean(r[8]),
+      verifyingKeyHash: toStr(r[4]),
+      publicInputCount: Number(r[5] ?? 0),
+      privateInputCount: Number(r[6] ?? 0),
+      createdBy: toStr(r[7]),
+      createdAt: Number(r[8] ?? 0),
+      active: Boolean(r[9]),
+      circuitType: (r[10] as any) || CircuitType.RangeProof,
+      supportedAttributes: Array.isArray(r[11]) ? (r[11] as unknown[]).map(toStr) : [],
     };
   }
 
